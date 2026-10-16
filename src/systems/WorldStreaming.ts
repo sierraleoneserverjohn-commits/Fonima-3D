@@ -514,156 +514,20 @@ export class WorldStreamingSystem {
   private buildHighwayRibbonForChunk(
     group: THREE.Group,
     xStart: number,
-    xEnd: number,
+    _xEnd: number,
     idx: number
   ): void {
-    // For Chunk 1, start highway ribbon at X = 95 so it meets Williams Street (X = 95) with zero overlap
-    const actualStart = idx === 1 ? 95 : xStart;
-    const length = xEnd - actualStart;
-    const xMid = (actualStart + xEnd) / 2;
-    const stepsX = 28;
-    const roadWidth = 8.4;
-    const shoulderWidth = 11.4;
-
-    // Laterite Shoulder Ribbon (exact length `length` so adjacent chunks never overlap or Z-fight)
-    const shGeo = new THREE.PlaneGeometry(length, shoulderWidth, stepsX, 2);
-    shGeo.rotateX(-Math.PI / 2);
-    const shPos = shGeo.attributes.position;
-    for (let i = 0; i < shPos.count; i++) {
-      const lx = shPos.getX(i);
-      const lz = shPos.getZ(i);
-      const wx = xMid + lx;
-      const centerZ = EnvironmentSystem.getHighwayCenterZ(wx);
-      const wz = centerZ + lz;
-      let wy = EnvironmentSystem.getTerrainHeight(wx, wz) + 0.055;
-      if (wx >= 642 && wx <= 698) {
-        wy += Math.sin(((wx - 642) / 56) * Math.PI) * 1.15;
-      }
-      shPos.setZ(i, wz);
-      shPos.setY(i, wy);
-    }
-    shGeo.computeVertexNormals();
-    const shMesh = new THREE.Mesh(shGeo, this.lateriteShoulderMat);
-    shMesh.position.set(xMid, 0, 0);
-    shMesh.receiveShadow = true;
-    shMesh.renderOrder = 2;
-    shMesh.userData.disposeGeo = true;
-    group.add(shMesh);
-
-    // Asphalt Highway Ribbon (sits at +0.125m above terrain so it matches Williams Street and vehicle tires)
-    const rdGeo = new THREE.PlaneGeometry(length, roadWidth, stepsX, 4);
-    rdGeo.rotateX(-Math.PI / 2);
-    const rdPos = rdGeo.attributes.position;
-    for (let i = 0; i < rdPos.count; i++) {
-      const lx = rdPos.getX(i);
-      const lz = rdPos.getZ(i);
-      const wx = xMid + lx;
-      const centerZ = EnvironmentSystem.getHighwayCenterZ(wx);
-      const wz = centerZ + lz;
-      let wy = EnvironmentSystem.getTerrainHeight(wx, wz) + 0.125;
-      if (wx >= 642 && wx <= 698) {
-        wy += Math.sin(((wx - 642) / 56) * Math.PI) * 1.15;
-      }
-      rdPos.setZ(i, wz);
-      rdPos.setY(i, wy);
-    }
-    rdGeo.computeVertexNormals();
-    const rdMesh = new THREE.Mesh(rdGeo, this.asphaltMat);
-    rdMesh.position.set(xMid, 0, 0);
-    rdMesh.receiveShadow = true;
-    rdMesh.renderOrder = 5;
-    rdMesh.userData.disposeGeo = true;
-    group.add(rdMesh);
-
-    // Center Yellow Highway Dashed Line Markings
-    for (let dx = 4; dx < length - 2; dx += 10) {
-      const wx = actualStart + dx;
-      const wz = EnvironmentSystem.getHighwayCenterZ(wx);
-      const slope = EnvironmentSystem.getHighwaySlopeZ(wx);
-      let wy = EnvironmentSystem.getTerrainHeight(wx, wz) + 0.145;
-      if (wx >= 642 && wx <= 698) {
-        wy += Math.sin(((wx - 642) / 56) * Math.PI) * 1.15;
-      }
-      const dash = new THREE.Mesh(
-        new THREE.PlaneGeometry(3.8, 0.18),
-        this.dashLineMat
-      );
-      dash.rotation.x = -Math.PI / 2;
-      dash.rotation.z = -Math.atan(slope);
-      dash.position.set(wx, wy, wz);
-      dash.renderOrder = 6;
-      dash.userData.disposeGeo = true;
-      group.add(dash);
-    }
-
-    // Add tropical palms & countryside bushes along the highway chunk
+    // Road surface is built from unified RoadGraph in RoadsSystem; chunk streaming manages roadside foliage & scenery
     this.addCountrysideFoliage(group, xStart, idx);
   }
 
   private buildBoCityStreetsForChunk(
-    group: THREE.Group,
-    xStart: number,
-    xEnd: number,
-    idx: number
+    _group: THREE.Group,
+    _xStart: number,
+    _xEnd: number,
+    _idx: number
   ): void {
-    const length = xEnd - xStart;
-    const xMid = (xStart + xEnd) / 2;
-
-    // 1. Bojon Street (Primary East-West Commercial Arterial of Bo City at Z = 0, width 9.6m, height +0.125m)
-    const bojonGeo = new THREE.PlaneGeometry(length, 9.6, 20, 2);
-    bojonGeo.rotateX(-Math.PI / 2);
-    const bPos = bojonGeo.attributes.position;
-    for (let i = 0; i < bPos.count; i++) {
-      const wx = xMid + bPos.getX(i);
-      const wz = bPos.getZ(i);
-      bPos.setY(i, EnvironmentSystem.getTerrainHeight(wx, wz) + 0.125);
-    }
-    bojonGeo.computeVertexNormals();
-    const bojonMesh = new THREE.Mesh(bojonGeo, this.asphaltMat);
-    bojonMesh.position.set(xMid, 0, 0);
-    bojonMesh.receiveShadow = true;
-    bojonMesh.renderOrder = 5;
-    bojonMesh.userData.disposeGeo = true;
-    group.add(bojonMesh);
-
-    // 2. Dambala Road (North Parallel Street at Z = -38) & Tikonko Road (South Parallel Street at Z = +38, height +0.085m)
-    [-38, 38].forEach((parallelZ) => {
-      const pGeo = new THREE.PlaneGeometry(length, 6.2, 16, 2);
-      pGeo.rotateX(-Math.PI / 2);
-      const pPos = pGeo.attributes.position;
-      for (let i = 0; i < pPos.count; i++) {
-        const wx = xMid + pPos.getX(i);
-        const wz = parallelZ + pPos.getZ(i);
-        pPos.setY(i, EnvironmentSystem.getTerrainHeight(wx, wz) + 0.085);
-      }
-      pGeo.computeVertexNormals();
-      const pMesh = new THREE.Mesh(pGeo, this.lateriteShoulderMat);
-      pMesh.position.set(xMid, 0, parallelZ);
-      pMesh.receiveShadow = true;
-      pMesh.renderOrder = 2;
-      pMesh.userData.disposeGeo = true;
-      group.add(pMesh);
-    });
-
-    // 3. North-South Cross Streets in Bo City: Fenton Road (X = 1150) & Sewa Road (X = 1220, height +0.105m)
-    const crossStreets = idx === 11 ? [1150] : idx === 12 ? [1220] : [];
-    crossStreets.forEach((crossX) => {
-      const cGeo = new THREE.PlaneGeometry(7.6, 150, 2, 24);
-      cGeo.rotateX(-Math.PI / 2);
-      const cPos = cGeo.attributes.position;
-      for (let i = 0; i < cPos.count; i++) {
-        const wx = crossX + cPos.getX(i);
-        const wz = cPos.getZ(i);
-        cPos.setY(i, EnvironmentSystem.getTerrainHeight(wx, wz) + 0.105);
-      }
-      cGeo.computeVertexNormals();
-      const cMesh = new THREE.Mesh(cGeo, this.asphaltCrossMat);
-      cMesh.position.set(crossX, 0, 0);
-      cMesh.receiveShadow = true;
-      cMesh.renderOrder = 4;
-      cMesh.userData.disposeGeo = true;
-      group.add(cMesh);
-    });
+    // Bo City streets are built from unified RoadGraph in RoadsSystem with junction patches and zebra crossings
   }
 
   private addCountrysideFoliage(

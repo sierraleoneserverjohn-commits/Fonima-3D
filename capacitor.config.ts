@@ -1,4 +1,12 @@
-import type { CapacitorConfig } from '@capacitor/cli';
+export interface CapacitorConfig {
+  appId: string;
+  appName: string;
+  webDir: string;
+  bundledWebRuntime?: boolean;
+  android?: {
+    allowMixedContent?: boolean;
+  };
+}
 
 const config: CapacitorConfig = {
   appId: 'com.fonima.game',

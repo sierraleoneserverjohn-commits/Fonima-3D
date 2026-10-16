@@ -1,31 +1,9 @@
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { EnvironmentSystem } from './Environment';
 import { RoadsSystem } from './Roads';
+import { RoadGraph, RoadGraphNode, RoadGraphSegment } from './RoadGraph';
 
 export type TrafficDensity = 'off' | 'low' | 'medium' | 'high';
-
-export interface RoadGraphNode {
-  id: string;
-  x: number;
-  z: number;
-  connections: string[]; // Segment IDs meeting at this node
-}
-
-export interface RoadGraphSegment {
-  id: string;
-  name: string;
-  nodeAId: string;
-  nodeBId: string;
-  width: number;
-  speedLimit: number; // m/s
-  length: number;
-  dirX: number;
-  dirZ: number;
-  rightX: number;
-  rightZ: number;
-}
-
 export type VehicleType = 'taxi' | 'car' | 'truck';
 
 interface TrafficVehicle {
@@ -47,11 +25,13 @@ interface TrafficVehicle {
   z: number;
   yaw: number;
   pitch: number;
+  roll: number;
 
   // Smooth junction turning state
   isTurning: boolean;
   turnProgress: number; // 0 to 1
-  turnDuration: number;
+  turnDistanceTraveled: number;
+  turnArcLength: number;
   turnP0: THREE.Vector3;
   turnP1: THREE.Vector3;
   turnP2: THREE.Vector3;
@@ -59,7 +39,7 @@ interface TrafficVehicle {
   turnTargetSegmentId: string;
   turnTargetForward: boolean;
 
-  // Visual wheels & lights
+  // Visual wheel spin
   wheelRotation: number;
 }
 
@@ -67,17 +47,12 @@ export class TrafficSystem {
   private scene: THREE.Scene;
   private roads: RoadsSystem;
 
-  // Road Graph
-  private nodes: Map<string, RoadGraphNode> = new Map();
-  private segments: Map<string, RoadGraphSegment> = new Map();
-  private segmentList: RoadGraphSegment[] = [];
-
-  // Vehicle instances and pool
+  // Vehicles
   private vehicles: TrafficVehicle[] = [];
   private nextVehicleId = 1;
   private readonly maxVehiclePool = 65;
 
-  // Instanced Meshes (2 per vehicle type: body + details)
+  // Instanced Meshes (2 per vehicle type: body + detail)
   private taxiBodyInst!: THREE.InstancedMesh;
   private taxiDetailInst!: THREE.InstancedMesh;
   private carBodyInst!: THREE.InstancedMesh;
@@ -85,29 +60,27 @@ export class TrafficSystem {
   private truckBodyInst!: THREE.InstancedMesh;
   private truckDetailInst!: THREE.InstancedMesh;
 
-  // Settings & FPS Throttling
+  // Settings & Auto Throttling
   public density: TrafficDensity = 'medium';
   private fpsThrottleOffset = 0;
   private lowFpsAccumulator = 0;
   private goodFpsAccumulator = 0;
   private spawnCooldown = 0;
 
-  // Scratch objects for zero allocations during update loop
+  // Scratch objects
   private dummyObj = new THREE.Object3D();
-  private scratchVec = new THREE.Vector3();
-  private scratchVec2 = new THREE.Vector3();
 
-  // Color palettes
+  // Color Palettes
   private static readonly TAXI_YELLOW = new THREE.Color(0xf59e0b);
   private static readonly CAR_COLORS: THREE.Color[] = [
     new THREE.Color(0x2563eb), // Royal Blue
     new THREE.Color(0xdc2626), // Carmine Red
     new THREE.Color(0xe2e8f0), // Pearl Silver
-    new THREE.Color(0x334155), // Graphite Dark Slate
+    new THREE.Color(0x334155), // Dark Slate
     new THREE.Color(0x059669), // Emerald Green
-    new THREE.Color(0x475569), // Slate Gray
-    new THREE.Color(0x7c3aed), // Deep Violet
+    new THREE.Color(0x7c3aed), // Violet
     new THREE.Color(0x0891b2), // Cyan Teal
+    new THREE.Color(0xd97706), // Amber Ochre
   ];
   private static readonly TRUCK_COLORS: THREE.Color[] = [
     new THREE.Color(0xf1f5f9), // White Cab
@@ -120,7 +93,8 @@ export class TrafficSystem {
     this.scene = scene;
     this.roads = roads;
 
-    // Load saved traffic density setting
+    RoadGraph.initialize();
+
     try {
       const saved = localStorage.getItem('fonima_3d_traffic_density');
       if (
@@ -135,581 +109,181 @@ export class TrafficSystem {
       this.density = 'medium';
     }
 
-    this.buildRoadGraph();
     this.buildVehicleMeshes();
+    this.seedInitialTraffic(new THREE.Vector3(0, 0, 0));
   }
 
-  // Build the complete road network connecting Freetown, Highway, and Bo City
-  private buildRoadGraph(): void {
-    // Helper to register node
-    const addNode = (id: string, x: number, z: number): void => {
-      this.nodes.set(id, { id, x, z, connections: [] });
-    };
-
-    // Helper to register bidirectional segment
-    const addSegment = (
-      id: string,
-      name: string,
-      nodeAId: string,
-      nodeBId: string,
-      width: number,
-      speedLimit: number
-    ): void => {
-      const nodeA = this.nodes.get(nodeAId);
-      const nodeB = this.nodes.get(nodeBId);
-      if (!nodeA || !nodeB) return;
-
-      const dx = nodeB.x - nodeA.x;
-      const dz = nodeB.z - nodeA.z;
-      const length = Math.hypot(dx, dz);
-      if (length < 0.5) return;
-
-      const dirX = dx / length;
-      const dirZ = dz / length;
-      // 2D right-hand normal vector
-      const rightX = dirZ;
-      const rightZ = -dirX;
-
-      const seg: RoadGraphSegment = {
-        id,
-        name,
-        nodeAId,
-        nodeBId,
-        width,
-        speedLimit,
-        length,
-        dirX,
-        dirZ,
-        rightX,
-        rightZ,
-      };
-
-      this.segments.set(id, seg);
-      this.segmentList.push(seg);
-      nodeA.connections.push(id);
-      nodeB.connections.push(id);
-    };
-
-    // 1. FREETOWN / FONIMA NODES
-    addNode('ft_williams_w', -90, 0);
-    addNode('ft_jct_fonima_williams', -23.5, 0);
-    addNode('ft_jct_east_williams', 27.5, 0);
-    addNode('ft_williams_e', 95, 0);
-
-    addNode('ft_peninsula_w', -90, -59);
-    addNode('ft_jct_fonima_peninsula', -23.5, -59);
-    addNode('ft_jct_east_peninsula', 27.5, -59);
-    addNode('ft_peninsula_e', 90, -59);
-
-    addNode('ft_fonima_n', -23.5, -80);
-    addNode('ft_fonima_s', -23.5, 80);
-
-    addNode('ft_east_fonima_n', 27.5, -80);
-    addNode('ft_east_fonima_s', 27.5, 80);
-
-    // FREETOWN ROAD SEGMENTS
-    addSegment(
-      'seg_williams_w',
-      'Williams Street (West)',
-      'ft_williams_w',
-      'ft_jct_fonima_williams',
-      7.4,
-      10.0
-    );
-    addSegment(
-      'seg_williams_mid',
-      'Williams Street (Mid)',
-      'ft_jct_fonima_williams',
-      'ft_jct_east_williams',
-      7.4,
-      11.0
-    );
-    addSegment(
-      'seg_williams_e',
-      'Williams Street (East)',
-      'ft_jct_east_williams',
-      'ft_williams_e',
-      7.4,
-      12.0
-    );
-
-    addSegment(
-      'seg_peninsula_w',
-      'Peninsula Road (West)',
-      'ft_peninsula_w',
-      'ft_jct_fonima_peninsula',
-      8.6,
-      13.0
-    );
-    addSegment(
-      'seg_peninsula_mid',
-      'Peninsula Road (Mid)',
-      'ft_jct_fonima_peninsula',
-      'ft_jct_east_peninsula',
-      8.6,
-      13.0
-    );
-    addSegment(
-      'seg_peninsula_e',
-      'Peninsula Road (East)',
-      'ft_jct_east_peninsula',
-      'ft_peninsula_e',
-      8.6,
-      13.0
-    );
-
-    addSegment(
-      'seg_fonima_n',
-      'Fonima Drive (North)',
-      'ft_fonima_n',
-      'ft_jct_fonima_peninsula',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_fonima_mid',
-      'Fonima Drive (Mid)',
-      'ft_jct_fonima_peninsula',
-      'ft_jct_fonima_williams',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_fonima_s',
-      'Fonima Drive (South)',
-      'ft_jct_fonima_williams',
-      'ft_fonima_s',
-      6.0,
-      9.0
-    );
-
-    addSegment(
-      'seg_east_fonima_n',
-      'East Fonima Street (North)',
-      'ft_east_fonima_n',
-      'ft_jct_east_peninsula',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_east_fonima_mid',
-      'East Fonima Street (Mid)',
-      'ft_jct_east_peninsula',
-      'ft_jct_east_williams',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_east_fonima_s',
-      'East Fonima Street (South)',
-      'ft_jct_east_williams',
-      'ft_east_fonima_s',
-      6.0,
-      9.0
-    );
-
-    // 2. FREETOWN-BO HIGHWAY (Continuous connected curve from X=95 to X=1060)
-    const hwySteps = [
-      95, 135, 175, 220, 265, 310, 360, 410, 465, 520, 575, 630, 685, 740, 795,
-      850, 905, 960, 1010, 1060,
-    ];
-    for (let i = 0; i < hwySteps.length; i++) {
-      const hx = hwySteps[i];
-      const hz = EnvironmentSystem.getHighwayCenterZ(hx);
-      const nodeId = i === 0 ? 'ft_williams_e' : `hwy_node_${i}`;
-      if (i > 0) {
-        addNode(nodeId, hx, hz);
-      }
-    }
-    for (let i = 0; i < hwySteps.length - 1; i++) {
-      const prevId = i === 0 ? 'ft_williams_e' : `hwy_node_${i}`;
-      const nextId =
-        i === hwySteps.length - 2 ? 'bo_entrance' : `hwy_node_${i + 1}`;
-      if (i === hwySteps.length - 2) {
-        addNode('bo_entrance', 1060, 0);
-      }
-      addSegment(
-        `seg_hwy_${i}`,
-        `Freetown–Bo Highway Section ${i + 1}`,
-        prevId,
-        nextId,
-        8.6,
-        19.0
-      );
-    }
-
-    // 3. BO CITY NODES & STREETS (X in [1060, 1300])
-    addNode('bo_jct_fenton', 1150, 0); // Bo Clocktower roundabout
-    addNode('bo_jct_sewa', 1220, 0);
-    addNode('bo_east_end', 1300, 0);
-
-    addNode('bo_fenton_n', 1150, -50);
-    addNode('bo_fenton_dambala', 1150, -38);
-    addNode('bo_fenton_tikonko', 1150, 38);
-    addNode('bo_fenton_s', 1150, 50);
-
-    addNode('bo_sewa_n', 1220, -50);
-    addNode('bo_sewa_dambala', 1220, -38);
-    addNode('bo_sewa_tikonko', 1220, 38);
-    addNode('bo_sewa_s', 1220, 50);
-
-    addNode('bo_dambala_w', 1120, -38);
-    addNode('bo_dambala_e', 1280, -38);
-
-    addNode('bo_tikonko_w', 1120, 38);
-    addNode('bo_tikonko_e', 1280, 38);
-
-    // BO CITY SEGMENTS
-    addSegment(
-      'seg_bojon_w',
-      'Bojon Street (West)',
-      'bo_entrance',
-      'bo_jct_fenton',
-      8.0,
-      11.0
-    );
-    addSegment(
-      'seg_bojon_mid',
-      'Bojon Street (Clocktower to Market)',
-      'bo_jct_fenton',
-      'bo_jct_sewa',
-      8.0,
-      10.0
-    );
-    addSegment(
-      'seg_bojon_e',
-      'Bojon Street (East)',
-      'bo_jct_sewa',
-      'bo_east_end',
-      7.4,
-      10.0
-    );
-
-    addSegment(
-      'seg_fenton_n',
-      'Fenton Road (North)',
-      'bo_fenton_n',
-      'bo_fenton_dambala',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_fenton_mid_n',
-      'Fenton Road (Mid North)',
-      'bo_fenton_dambala',
-      'bo_jct_fenton',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_fenton_mid_s',
-      'Fenton Road (Mid South)',
-      'bo_jct_fenton',
-      'bo_fenton_tikonko',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_fenton_s',
-      'Fenton Road (South)',
-      'bo_fenton_tikonko',
-      'bo_fenton_s',
-      6.0,
-      9.0
-    );
-
-    addSegment(
-      'seg_sewa_n',
-      'Sewa Road (North)',
-      'bo_sewa_n',
-      'bo_sewa_dambala',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_sewa_mid_n',
-      'Sewa Road (Mid North)',
-      'bo_sewa_dambala',
-      'bo_jct_sewa',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_sewa_mid_s',
-      'Sewa Road (Mid South)',
-      'bo_jct_sewa',
-      'bo_sewa_tikonko',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_sewa_s',
-      'Sewa Road (South)',
-      'bo_sewa_tikonko',
-      'bo_sewa_s',
-      6.0,
-      9.0
-    );
-
-    addSegment(
-      'seg_dambala_w',
-      'Dambala Road (West)',
-      'bo_dambala_w',
-      'bo_fenton_dambala',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_dambala_mid',
-      'Dambala Road (Mid)',
-      'bo_fenton_dambala',
-      'bo_sewa_dambala',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_dambala_e',
-      'Dambala Road (East)',
-      'bo_sewa_dambala',
-      'bo_dambala_e',
-      6.0,
-      9.0
-    );
-
-    addSegment(
-      'seg_tikonko_w',
-      'Tikonko Road (West)',
-      'bo_tikonko_w',
-      'bo_fenton_tikonko',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_tikonko_mid',
-      'Tikonko Road (Mid)',
-      'bo_fenton_tikonko',
-      'bo_sewa_tikonko',
-      6.0,
-      9.0
-    );
-    addSegment(
-      'seg_tikonko_e',
-      'Tikonko Road (East)',
-      'bo_sewa_tikonko',
-      'bo_tikonko_e',
-      6.0,
-      9.0
-    );
-  }
-
-  // Construct low-poly geometries and InstancedMeshes
+  // Build low-poly instanced vehicle meshes
   private buildVehicleMeshes(): void {
     // 1. YELLOW TAXI
-    // Body: chassis + hood + cabin roof + front/rear bumpers
-    const taxiChassis = new THREE.BoxGeometry(1.72, 0.42, 4.1);
-    taxiChassis.translate(0, 0.42, 0);
+    const taxiBodyParts: THREE.BufferGeometry[] = [];
+    const taxiLower = new THREE.BoxGeometry(1.68, 0.44, 3.8);
+    taxiLower.translate(0, 0.42, 0);
+    taxiBodyParts.push(taxiLower);
 
-    const taxiCabin = new THREE.BoxGeometry(1.42, 0.52, 2.1);
-    taxiCabin.translate(0, 0.88, -0.15);
+    const taxiCabin = new THREE.BoxGeometry(1.42, 0.46, 1.85);
+    taxiCabin.translate(0, 0.84, -0.15);
+    taxiBodyParts.push(taxiCabin);
 
-    const taxiBumpFront = new THREE.BoxGeometry(1.76, 0.22, 0.22);
-    taxiBumpFront.translate(0, 0.32, 2.1);
+    const taxiHoodSlant = new THREE.BoxGeometry(1.5, 0.22, 0.95);
+    taxiHoodSlant.rotateX(-0.16);
+    taxiHoodSlant.translate(0, 0.58, 1.15);
+    taxiBodyParts.push(taxiHoodSlant);
 
-    const taxiBumpRear = new THREE.BoxGeometry(1.76, 0.22, 0.22);
-    taxiBumpRear.translate(0, 0.32, -2.1);
+    const taxiTrunk = new THREE.BoxGeometry(1.48, 0.2, 0.85);
+    taxiTrunk.translate(0, 0.56, -1.35);
+    taxiBodyParts.push(taxiTrunk);
 
-    const taxiBodyGeo = BufferGeometryUtils.mergeGeometries([
-      taxiChassis,
-      taxiCabin,
-      taxiBumpFront,
-      taxiBumpRear,
-    ])!;
-    taxiBodyGeo.computeVertexNormals();
+    const taxiBodyGeo = BufferGeometryUtils.mergeGeometries(taxiBodyParts);
 
-    // Taxi Details: tinted glass + roof sign + headlights + wheels
-    const taxiGlassFront = new THREE.BoxGeometry(1.36, 0.46, 0.12);
-    taxiGlassFront.translate(0, 0.86, 0.9);
-    taxiGlassFront.rotateX(0.24);
+    // Taxi details: black glass, wheels, bumpers, roof sign
+    const taxiDetailParts: THREE.BufferGeometry[] = [];
+    const taxiWindshield = new THREE.BoxGeometry(1.44, 0.4, 0.08);
+    taxiWindshield.rotateX(0.38);
+    taxiWindshield.translate(0, 0.82, 0.8);
+    taxiDetailParts.push(taxiWindshield);
 
-    const taxiGlassRear = new THREE.BoxGeometry(1.36, 0.44, 0.12);
-    taxiGlassRear.translate(0, 0.86, -1.2);
-    taxiGlassRear.rotateX(-0.24);
+    const taxiRearGlass = new THREE.BoxGeometry(1.44, 0.38, 0.08);
+    taxiRearGlass.rotateX(-0.35);
+    taxiRearGlass.translate(0, 0.82, -1.05);
+    taxiDetailParts.push(taxiRearGlass);
 
-    const taxiGlassSides = new THREE.BoxGeometry(1.46, 0.42, 1.85);
-    taxiGlassSides.translate(0, 0.88, -0.15);
+    const taxiRoofSign = new THREE.BoxGeometry(0.55, 0.16, 0.22);
+    taxiRoofSign.translate(0, 1.15, -0.15);
+    taxiDetailParts.push(taxiRoofSign);
 
-    // Roof Taxi Sign
-    const taxiSign = new THREE.BoxGeometry(0.55, 0.15, 0.22);
-    taxiSign.translate(0, 1.22, -0.15);
+    const taxiBumpF = new THREE.BoxGeometry(1.66, 0.16, 0.18);
+    taxiBumpF.translate(0, 0.24, 1.95);
+    taxiDetailParts.push(taxiBumpF);
 
-    // Wheels (4 cylinders with horizontal rotation)
-    const wheelGeo = new THREE.CylinderGeometry(0.31, 0.31, 0.24, 10);
-    wheelGeo.rotateZ(Math.PI / 2);
+    const taxiBumpR = new THREE.BoxGeometry(1.66, 0.16, 0.18);
+    taxiBumpR.translate(0, 0.24, -1.95);
+    taxiDetailParts.push(taxiBumpR);
 
-    const wFL = wheelGeo.clone().translate(-0.84, 0.31, 1.25);
-    const wFR = wheelGeo.clone().translate(0.84, 0.31, 1.25);
-    const wRL = wheelGeo.clone().translate(-0.84, 0.31, -1.25);
-    const wRR = wheelGeo.clone().translate(0.84, 0.31, -1.25);
+    // Wheels
+    const wheelPositions: [number, number, number][] = [
+      [-0.82, 0.28, 1.15],
+      [0.82, 0.28, 1.15],
+      [-0.82, 0.28, -1.15],
+      [0.82, 0.28, -1.15],
+    ];
+    wheelPositions.forEach(([wx, wy, wz]) => {
+      const w = new THREE.CylinderGeometry(0.28, 0.28, 0.22, 10);
+      w.rotateZ(Math.PI / 2);
+      w.translate(wx, wy, wz);
+      taxiDetailParts.push(w);
+    });
 
-    // Headlights
-    const hlL = new THREE.BoxGeometry(0.28, 0.14, 0.08).translate(
-      -0.62,
-      0.48,
-      2.06
-    );
-    const hlR = new THREE.BoxGeometry(0.28, 0.14, 0.08).translate(
-      0.62,
-      0.48,
-      2.06
-    );
+    // Headlights & Taillights
+    const hlL = new THREE.BoxGeometry(0.24, 0.12, 0.08);
+    hlL.translate(-0.55, 0.44, 1.92);
+    taxiDetailParts.push(hlL);
+    const hlR = new THREE.BoxGeometry(0.24, 0.12, 0.08);
+    hlR.translate(0.55, 0.44, 1.92);
+    taxiDetailParts.push(hlR);
 
-    const taxiDetailGeo = BufferGeometryUtils.mergeGeometries([
-      taxiGlassFront,
-      taxiGlassRear,
-      taxiGlassSides,
-      taxiSign,
-      wFL,
-      wFR,
-      wRL,
-      wRR,
-      hlL,
-      hlR,
-    ])!;
-    taxiDetailGeo.computeVertexNormals();
+    const tlL = new THREE.BoxGeometry(0.24, 0.12, 0.08);
+    tlL.translate(-0.55, 0.44, -1.92);
+    taxiDetailParts.push(tlL);
+    const tlR = new THREE.BoxGeometry(0.24, 0.12, 0.08);
+    tlR.translate(0.55, 0.44, -1.92);
+    taxiDetailParts.push(tlR);
+
+    const taxiDetailGeo = BufferGeometryUtils.mergeGeometries(taxiDetailParts);
 
     // 2. PRIVATE CAR
-    const carChassis = new THREE.BoxGeometry(1.74, 0.44, 4.25);
-    carChassis.translate(0, 0.43, 0);
+    const carBodyParts: THREE.BufferGeometry[] = [];
+    const carLower = new THREE.BoxGeometry(1.72, 0.46, 4.1);
+    carLower.translate(0, 0.44, 0);
+    carBodyParts.push(carLower);
 
-    const carCabin = new THREE.BoxGeometry(1.44, 0.52, 2.2);
-    carCabin.translate(0, 0.89, -0.1);
+    const carCabin = new THREE.BoxGeometry(1.44, 0.48, 2.0);
+    carCabin.translate(0, 0.88, -0.2);
+    carBodyParts.push(carCabin);
 
-    const carBumpF = new THREE.BoxGeometry(1.78, 0.22, 0.22).translate(
-      0,
-      0.32,
-      2.16
-    );
-    const carBumpR = new THREE.BoxGeometry(1.78, 0.22, 0.22).translate(
-      0,
-      0.32,
-      -2.16
-    );
+    const carBodyGeo = BufferGeometryUtils.mergeGeometries(carBodyParts);
 
-    const carBodyGeo = BufferGeometryUtils.mergeGeometries([
-      carChassis,
-      carCabin,
-      carBumpF,
-      carBumpR,
-    ])!;
-    carBodyGeo.computeVertexNormals();
+    const carDetailParts: THREE.BufferGeometry[] = [];
+    const carGlassF = new THREE.BoxGeometry(1.46, 0.42, 0.08);
+    carGlassF.rotateX(0.42);
+    carGlassF.translate(0, 0.84, 0.85);
+    carDetailParts.push(carGlassF);
 
-    const carGlassFront = new THREE.BoxGeometry(1.38, 0.46, 0.12)
-      .translate(0, 0.87, 0.96)
-      .rotateX(0.28);
-    const carGlassRear = new THREE.BoxGeometry(1.38, 0.44, 0.12)
-      .translate(0, 0.87, -1.16)
-      .rotateX(-0.28);
-    const carGlassSides = new THREE.BoxGeometry(1.48, 0.42, 1.95).translate(
-      0,
-      0.89,
-      -0.1
-    );
+    const carGlassR = new THREE.BoxGeometry(1.46, 0.4, 0.08);
+    carGlassR.rotateX(-0.38);
+    carGlassR.translate(0, 0.84, -1.22);
+    carDetailParts.push(carGlassR);
 
-    const cwFL = wheelGeo.clone().translate(-0.85, 0.31, 1.3);
-    const cwFR = wheelGeo.clone().translate(0.85, 0.31, 1.3);
-    const cwRL = wheelGeo.clone().translate(-0.85, 0.31, -1.3);
-    const cwRR = wheelGeo.clone().translate(0.85, 0.31, -1.3);
+    wheelPositions.forEach(([wx, wy, wz]) => {
+      const w = new THREE.CylinderGeometry(0.3, 0.3, 0.24, 10);
+      w.rotateZ(Math.PI / 2);
+      w.translate(wx * 1.02, wy * 1.04, wz * 1.05);
+      carDetailParts.push(w);
+    });
 
-    const carDetailGeo = BufferGeometryUtils.mergeGeometries([
-      carGlassFront,
-      carGlassRear,
-      carGlassSides,
-      cwFL,
-      cwFR,
-      cwRL,
-      cwRR,
-      hlL.clone().translate(0, 0, 0.06),
-      hlR.clone().translate(0, 0, 0.06),
-    ])!;
-    carDetailGeo.computeVertexNormals();
+    const carDetailGeo = BufferGeometryUtils.mergeGeometries(carDetailParts);
 
     // 3. SMALL TRUCK
-    // Front cab + rear flatbed / pickup bed
-    const truckCab = new THREE.BoxGeometry(1.82, 0.98, 1.6);
-    truckCab.translate(0, 0.84, 1.2);
+    const truckBodyParts: THREE.BufferGeometry[] = [];
+    const truckCab = new THREE.BoxGeometry(1.78, 0.95, 1.55);
+    truckCab.translate(0, 0.85, 1.25);
+    truckBodyParts.push(truckCab);
 
-    const truckBed = new THREE.BoxGeometry(1.86, 0.48, 2.7);
-    truckBed.translate(0, 0.58, -0.9);
+    const truckBed = new THREE.BoxGeometry(1.82, 0.52, 2.75);
+    truckBed.translate(0, 0.65, -0.85);
+    truckBodyParts.push(truckBed);
 
-    const truckBumper = new THREE.BoxGeometry(1.88, 0.26, 0.22).translate(
-      0,
-      0.36,
-      2.04
-    );
+    const truckBodyGeo = BufferGeometryUtils.mergeGeometries(truckBodyParts);
 
-    const truckBodyGeo = BufferGeometryUtils.mergeGeometries([
-      truckCab,
-      truckBed,
-      truckBumper,
-    ])!;
-    truckBodyGeo.computeVertexNormals();
+    const truckDetailParts: THREE.BufferGeometry[] = [];
+    const truckWindshield = new THREE.BoxGeometry(1.68, 0.44, 0.08);
+    truckWindshield.rotateX(0.18);
+    truckWindshield.translate(0, 1.05, 1.95);
+    truckDetailParts.push(truckWindshield);
 
-    // Truck glass + heavy wheels
-    const truckGlass = new THREE.BoxGeometry(1.68, 0.52, 0.12).translate(
-      0,
-      1.04,
-      1.98
-    );
-    const truckSideGlass = new THREE.BoxGeometry(1.86, 0.46, 0.95).translate(
-      0,
-      1.04,
-      1.15
-    );
+    const truckFrame = new THREE.BoxGeometry(1.2, 0.3, 4.4);
+    truckFrame.translate(0, 0.28, 0.1);
+    truckDetailParts.push(truckFrame);
 
-    const truckWheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.28, 10);
-    truckWheelGeo.rotateZ(Math.PI / 2);
+    const truckWheels: [number, number, number][] = [
+      [-0.88, 0.34, 1.3],
+      [0.88, 0.34, 1.3],
+      [-0.88, 0.34, -0.6],
+      [0.88, 0.34, -0.6],
+      [-0.88, 0.34, -1.5],
+      [0.88, 0.34, -1.5],
+    ];
+    truckWheels.forEach(([wx, wy, wz]) => {
+      const w = new THREE.CylinderGeometry(0.34, 0.34, 0.25, 10);
+      w.rotateZ(Math.PI / 2);
+      w.translate(wx, wy, wz);
+      truckDetailParts.push(w);
+    });
 
-    const twFL = truckWheelGeo.clone().translate(-0.92, 0.36, 1.25);
-    const twFR = truckWheelGeo.clone().translate(0.92, 0.36, 1.25);
-    const twRL = truckWheelGeo.clone().translate(-0.92, 0.36, -1.35);
-    const twRR = truckWheelGeo.clone().translate(0.92, 0.36, -1.35);
+    const truckDetailGeo = BufferGeometryUtils.mergeGeometries(truckDetailParts);
 
-    const truckDetailGeo = BufferGeometryUtils.mergeGeometries([
-      truckGlass,
-      truckSideGlass,
-      twFL,
-      twFR,
-      twRL,
-      twRR,
-    ])!;
-    truckDetailGeo.computeVertexNormals();
-
-    // Shared Materials
+    // Materials
     const taxiBodyMat = new THREE.MeshStandardMaterial({
       color: TrafficSystem.TAXI_YELLOW,
-      roughness: 0.42,
-      metalness: 0.18,
-    });
-
-    const carBodyMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.38,
-      metalness: 0.32,
-    });
-
-    const truckBodyMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.52,
-      metalness: 0.15,
-    });
-
-    const detailMat = new THREE.MeshStandardMaterial({
-      color: 0x1e293b,
-      roughness: 0.75,
+      roughness: 0.35,
       metalness: 0.25,
     });
+    const carBodyMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.32,
+      metalness: 0.35,
+    });
+    const truckBodyMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.55,
+      metalness: 0.15,
+    });
+    const detailMat = new THREE.MeshStandardMaterial({
+      color: 0x18181b,
+      roughness: 0.65,
+      metalness: 0.2,
+    });
 
-    // Create Instanced Meshes
     this.taxiBodyInst = new THREE.InstancedMesh(
       taxiBodyGeo,
       taxiBodyMat,
@@ -754,7 +328,6 @@ export class TrafficSystem {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      // Hide all unused instances far below ground initially
       this.dummyObj.position.set(0, -999, 0);
       this.dummyObj.scale.set(0, 0, 0);
       this.dummyObj.updateMatrix();
@@ -766,19 +339,29 @@ export class TrafficSystem {
     });
   }
 
-  // Calculate target active vehicle count based on setting & dynamic FPS throttle
+  // Populate initial active traffic so cars are already driving as soon as the game opens
+  private seedInitialTraffic(focusPos: THREE.Vector3): void {
+    const targetCount = this.getTargetVehicleCount();
+    const segments = RoadGraph.getAllSegments();
+    if (segments.length === 0 || targetCount === 0) return;
+
+    for (let i = 0; i < targetCount; i++) {
+      this.trySpawnVehicleNear(focusPos, true);
+    }
+  }
+
   public getTargetVehicleCount(): number {
     if (this.density === 'off') return 0;
-    let base = 30;
-    if (this.density === 'low') base = 15;
-    else if (this.density === 'medium') base = 30;
-    else if (this.density === 'high') base = 42;
+    let base = 32;
+    if (this.density === 'low') base = 16;
+    else if (this.density === 'medium') base = 32;
+    else if (this.density === 'high') base = 44;
 
     const target = Math.max(0, base - this.fpsThrottleOffset);
     return Math.min(this.maxVehiclePool, target);
   }
 
-  // Update loop called every frame
+  // Main update loop called every frame from World.ts
   public update(
     dt: number,
     focusPos: THREE.Vector3,
@@ -786,9 +369,9 @@ export class TrafficSystem {
     playerCarPos?: THREE.Vector3,
     isPlayerDriving?: boolean
   ): void {
-    const safeDt = Math.min(dt, 0.05);
+    const safeDt = Math.min(Math.max(0.001, dt), 0.05);
 
-    // 1. Dynamic FPS Auto-Throttling (Target 60 FPS on mid-range Android phone)
+    // 1. Dynamic FPS Auto-Throttling (60 FPS target on mid-range phones)
     if (currentFps < 45) {
       this.lowFpsAccumulator += safeDt;
       this.goodFpsAccumulator = 0;
@@ -799,7 +382,7 @@ export class TrafficSystem {
     } else if (currentFps >= 55) {
       this.goodFpsAccumulator += safeDt;
       this.lowFpsAccumulator = 0;
-      if (this.goodFpsAccumulator > 3.5) {
+      if (this.goodFpsAccumulator > 3.0) {
         this.fpsThrottleOffset = Math.max(0, this.fpsThrottleOffset - 1);
         this.goodFpsAccumulator = 0;
       }
@@ -807,61 +390,181 @@ export class TrafficSystem {
 
     const targetCount = this.getTargetVehicleCount();
 
-    // 2. Manage Vehicle Spawning and Despawning
-    this.spawnCooldown -= safeDt;
-
-    // Despawn vehicles farther than 320m from focus position or if over target cap
+    // 2. Despawn vehicles farther than 300m
     for (let i = this.vehicles.length - 1; i >= 0; i--) {
       const v = this.vehicles[i];
       const dist = Math.hypot(v.x - focusPos.x, v.z - focusPos.z);
-      if (
-        dist > 320 ||
-        (this.vehicles.length > targetCount && dist > 180 && !v.isTurning)
-      ) {
+      if (dist > 310 || (this.vehicles.length > targetCount && dist > 180 && !v.isTurning)) {
         this.vehicles.splice(i, 1);
       }
     }
 
-    // Spawn new vehicles if below target count
-    if (
-      this.vehicles.length < targetCount &&
-      this.spawnCooldown <= 0 &&
-      this.segmentList.length > 0
-    ) {
-      this.trySpawnVehicleNear(focusPos);
-      this.spawnCooldown = 0.12; // Gradual smooth spawning
+    // 3. Spawn vehicles near drone (within ~300m)
+    this.spawnCooldown -= safeDt;
+    if (this.vehicles.length < targetCount && this.spawnCooldown <= 0) {
+      this.trySpawnVehicleNear(focusPos, false);
+      this.spawnCooldown = 0.15;
     }
 
-    // 3. Update Vehicle Physics & Behavior
+    // 4. Update Vehicle Physics & Behavior (Delta-time continuous movement)
     for (let i = 0; i < this.vehicles.length; i++) {
-      this.updateVehicle(
-        this.vehicles[i],
-        safeDt,
-        playerCarPos,
-        isPlayerDriving
-      );
+      this.updateVehicle(this.vehicles[i], safeDt, playerCarPos, isPlayerDriving);
     }
 
-    // 4. Update Instanced Meshes
+    // 5. Update Instanced Meshes
     this.renderInstancedMeshes();
   }
 
-  // Update individual vehicle navigation, speed, steering, anti-collision, and terrain following
+  // Helper to detect any lead vehicle in front within the driving vector corridor
+  private checkLeadVehicle(
+    v: TrafficVehicle,
+    forwardDirX: number,
+    forwardDirZ: number,
+    playerCarPos?: THREE.Vector3,
+    isPlayerDriving?: boolean
+  ): { gap: number; leadSpeed: number } {
+    let closestGap = Infinity;
+    let leadSpeed = 0;
+
+    const latNormX = -forwardDirZ;
+    const latNormZ = forwardDirX;
+
+    // 1. Check all other traffic vehicles
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const other = this.vehicles[i];
+      if (other.id === v.id || !other.active) continue;
+
+      const dx = other.x - v.x;
+      const dz = other.z - v.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq > 28.0 * 28.0) continue;
+
+      const fwd = dx * forwardDirX + dz * forwardDirZ;
+      if (fwd <= 0.2 || fwd >= 24.0) continue;
+
+      const lat = Math.abs(dx * latNormX + dz * latNormZ);
+
+      // Same segment special-case: 1D distance ahead if traveling in same direction
+      if (!v.isTurning && !other.isTurning && other.segmentId === v.segmentId) {
+        if (other.forward === v.forward) {
+          const distAhead = other.distanceAlongSegment - v.distanceAlongSegment;
+          if (distAhead > 0 && distAhead < closestGap) {
+            closestGap = distAhead;
+            leadSpeed = other.speed;
+          }
+          continue;
+        } else {
+          // Oncoming opposite-direction traffic: separated by lane, skip unless lane breach
+          if (lat > 1.2) continue;
+        }
+      }
+
+      // Check relative heading to distinguish oncoming traffic from same-flow traffic
+      const otherDirX = Math.sin(other.yaw);
+      const otherDirZ = Math.cos(other.yaw);
+      const headingDot = forwardDirX * otherDirX + forwardDirZ * otherDirZ;
+
+      // Oncoming traffic passing in the opposite direction
+      if (headingDot < -0.3 && lat > 1.4) continue;
+
+      // Check if within vehicle travel lane corridor (wider tolerance during junction turns)
+      const allowedLaneWidth = v.isTurning || other.isTurning ? 2.8 : 2.2;
+      if (lat < allowedLaneWidth) {
+        if (fwd < closestGap) {
+          closestGap = fwd;
+          leadSpeed = other.speed;
+        }
+      }
+    }
+
+    // 2. Check player's vehicle (if parked or being driven)
+    if (playerCarPos) {
+      const dx = playerCarPos.x - v.x;
+      const dz = playerCarPos.z - v.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq <= 24.0 * 24.0) {
+        const fwd = dx * forwardDirX + dz * forwardDirZ;
+        const lat = Math.abs(dx * latNormX + dz * latNormZ);
+        if (fwd > 0.3 && fwd < 20.0 && lat < 2.5) {
+          if (fwd < closestGap) {
+            closestGap = fwd;
+            leadSpeed = 0; // Yield to player vehicle
+          }
+        }
+      }
+    }
+
+    return { gap: closestGap, leadSpeed };
+  }
+
+  // Smoothly orient vehicle to align with 3D road surface height, pitch, roll, and driving vector
+  private alignVehicleOrientation(
+    v: TrafficVehicle,
+    forwardDirX: number,
+    forwardDirZ: number,
+    dt: number
+  ): void {
+    // 1. Driving vector yaw alignment (smooth angle interpolation)
+    const targetYaw = Math.atan2(forwardDirX, forwardDirZ);
+    let diffYaw = targetYaw - v.yaw;
+    while (diffYaw > Math.PI) diffYaw -= Math.PI * 2;
+    while (diffYaw < -Math.PI) diffYaw += Math.PI * 2;
+    v.yaw += diffYaw * Math.min(1.0, dt * 14.0);
+
+    // 2. Pitch along the driving vector from road surface heights ahead & behind
+    const probeDist = 1.6;
+    const aheadX = v.x + forwardDirX * probeDist;
+    const aheadZ = v.z + forwardDirZ * probeDist;
+    const rearX = v.x - forwardDirX * probeDist;
+    const rearZ = v.z - forwardDirZ * probeDist;
+
+    const yAhead = this.roads.getSurfaceHeightAt(aheadX, aheadZ);
+    const yRear = this.roads.getSurfaceHeightAt(rearX, rearZ);
+    const targetPitch = THREE.MathUtils.clamp(
+      -Math.atan2(yAhead - yRear, probeDist * 2.0),
+      -0.45,
+      0.45
+    );
+    v.pitch += (targetPitch - v.pitch) * Math.min(1.0, dt * 12.0);
+
+    // 3. Roll across the road width (lateral banking)
+    const latNormX = -forwardDirZ;
+    const latNormZ = forwardDirX;
+    const latDist = 0.8;
+    const leftX = v.x - latNormX * latDist;
+    const leftZ = v.z - latNormZ * latDist;
+    const rightX = v.x + latNormX * latDist;
+    const rightZ = v.z + latNormZ * latDist;
+
+    const yLeft = this.roads.getSurfaceHeightAt(leftX, leftZ);
+    const yRight = this.roads.getSurfaceHeightAt(rightX, rightZ);
+    const targetRoll = THREE.MathUtils.clamp(
+      Math.atan2(yRight - yLeft, latDist * 2.0),
+      -0.35,
+      0.35
+    );
+    v.roll += (targetRoll - v.roll) * Math.min(1.0, dt * 12.0);
+  }
+
+  // Update an individual vehicle using continuous delta-time based movement
   private updateVehicle(
     v: TrafficVehicle,
     dt: number,
     playerCarPos?: THREE.Vector3,
     isPlayerDriving?: boolean
   ): void {
-    const seg = this.segments.get(v.segmentId);
-    if (!seg) return;
+    const seg = RoadGraph.getSegment(v.segmentId);
+    if (!seg) {
+      v.segmentId = RoadGraph.getAllSegments()[0]?.id || '';
+      return;
+    }
 
-    // A. Smooth Junction Turning Mode
+    // -------------------------------------------------------------
+    // A. SMOOTH JUNCTION TURNING MODE (Cubic Bézier Transition Arc)
+    // -------------------------------------------------------------
     if (v.isTurning) {
-      v.turnProgress += dt / v.turnDuration;
-      const t = Math.min(1, Math.max(0, v.turnProgress));
+      const t = Math.min(1.0, Math.max(0.0, v.turnProgress));
 
-      // Cubic Bézier curve evaluation
       const u = 1 - t;
       const tt = t * t;
       const uu = u * u;
@@ -873,12 +576,10 @@ export class TrafficSystem {
       const p2 = v.turnP2;
       const p3 = v.turnP3;
 
-      const px =
-        uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x;
-      const pz =
-        uuu * p0.z + 3 * uu * t * p1.z + 3 * u * tt * p2.z + ttt * p3.z;
+      const px = uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x;
+      const pz = uuu * p0.z + 3 * uu * t * p1.z + 3 * u * tt * p2.z + ttt * p3.z;
 
-      // Tangent derivative for exact heading
+      // Tangent derivative for exact forward heading & driving vector
       const dpx =
         3 * uu * (p1.x - p0.x) +
         6 * u * t * (p2.x - p1.x) +
@@ -888,233 +589,274 @@ export class TrafficSystem {
         6 * u * t * (p2.z - p1.z) +
         3 * tt * (p3.z - p2.z);
 
+      const tanLen = Math.hypot(dpx, dpz);
+      const forwardDirX = tanLen > 0.001 ? dpx / tanLen : Math.sin(v.yaw);
+      const forwardDirZ = tanLen > 0.001 ? dpz / tanLen : Math.cos(v.yaw);
+
+      // Check lead vehicle to maintain safe distance even while turning
+      const leadCheck = this.checkLeadVehicle(
+        v,
+        forwardDirX,
+        forwardDirZ,
+        playerCarPos,
+        isPlayerDriving
+      );
+
+      // Cornering speed limit through junction
+      let targetSpeed = 6.8;
+      if (leadCheck.gap <= 5.5) {
+        targetSpeed = 0;
+      } else if (leadCheck.gap <= 10.0) {
+        const ratio = (leadCheck.gap - 5.5) / 4.5;
+        targetSpeed = Math.min(targetSpeed, Math.max(0, leadCheck.leadSpeed * 0.7) * ratio);
+      } else if (leadCheck.gap <= 18.0) {
+        targetSpeed = Math.min(targetSpeed, Math.max(2.5, leadCheck.leadSpeed * 0.9));
+      }
+
+      // Continuous delta-time speed integration
+      if (v.speed < targetSpeed) {
+        v.speed = Math.min(targetSpeed, v.speed + 4.2 * dt);
+      } else {
+        const decel = targetSpeed === 0 ? 11.0 : 6.5;
+        v.speed = Math.max(0, v.speed - decel * dt);
+      }
+
+      // Continuous delta-time distance along turn arc
+      v.turnDistanceTraveled += v.speed * dt;
+      v.turnProgress = v.turnDistanceTraveled / Math.max(1.0, v.turnArcLength);
+
       v.x = px;
       v.z = pz;
-      v.yaw = Math.atan2(dpx, dpz);
 
-      // Follow road surface height
-      const targetY = this.roads.getSurfaceHeightAt(v.x, v.z);
-      v.y = targetY;
+      // Follow road surface height directly at vehicle coordinates
+      v.y = this.roads.getSurfaceHeightAt(v.x, v.z);
 
-      // Wheel rotation
-      v.wheelRotation += (v.speed / 0.32) * dt;
+      // Rotate to align with road height and driving vector at every junction
+      this.alignVehicleOrientation(v, forwardDirX, forwardDirZ, dt);
+
+      // Visual wheel rotation
+      v.wheelRotation += (v.speed / 0.3) * dt;
 
       if (v.turnProgress >= 1.0) {
-        // Transition finished, proceed on new segment
+        // Smoothly exit junction turn and continue driving along target segment
         v.isTurning = false;
         v.segmentId = v.turnTargetSegmentId;
         v.forward = v.turnTargetForward;
-        v.distanceAlongSegment = 0.5;
+        const targetSeg = RoadGraph.getSegment(v.segmentId);
+        v.distanceAlongSegment = Math.min(2.0, (targetSeg?.length || 20) * 0.08);
+        v.speed = Math.max(v.speed, 4.0);
       }
       return;
     }
 
-    // B. Straight / Highway Lane Following Mode
-    const laneOffset = seg.width * 0.25; // Drive on the right-hand side
+    // -------------------------------------------------------------
+    // B. STRAIGHT / ROAD SEGMENT DRIVING (Right-Hand Traffic)
+    // -------------------------------------------------------------
+    const laneOffset = seg.width * 0.25;
     const dirFactor = v.forward ? 1 : -1;
-    const travelDirX = seg.dirX * dirFactor;
-    const travelDirZ = seg.dirZ * dirFactor;
+    const forwardDirX = seg.dirX * dirFactor;
+    const forwardDirZ = seg.dirZ * dirFactor;
     const rightNormalX = seg.rightX * dirFactor;
     const rightNormalZ = seg.rightZ * dirFactor;
 
-    // B1. Anti-Collision: check for lead vehicles in same lane
-    let effectiveTargetSpeed = seg.speedLimit;
+    let targetSpeed = seg.speedLimit;
+
+    // Cornering slowdown when approaching end of segment / junction
     const distToEnd = seg.length - v.distanceAlongSegment;
-
-    // Slow down for upcoming junction / corner
-    if (distToEnd < 15.0) {
-      const junctionSlowdown = Math.max(4.5, (distToEnd / 15.0) * seg.speedLimit);
-      effectiveTargetSpeed = Math.min(effectiveTargetSpeed, junctionSlowdown);
+    if (distToEnd < 10.0) {
+      const cornerSpeed = Math.max(5.0, seg.speedLimit * 0.55);
+      targetSpeed = Math.min(
+        targetSpeed,
+        THREE.MathUtils.lerp(cornerSpeed, seg.speedLimit, distToEnd / 10.0)
+      );
     }
 
-    // Check other traffic vehicles ahead
-    for (let j = 0; j < this.vehicles.length; j++) {
-      const other = this.vehicles[j];
-      if (other.id === v.id) continue;
+    // Lead vehicle anti-collision check to maintain safe following distance
+    const leadCheck = this.checkLeadVehicle(
+      v,
+      forwardDirX,
+      forwardDirZ,
+      playerCarPos,
+      isPlayerDriving
+    );
 
-      const toOtherX = other.x - v.x;
-      const toOtherZ = other.z - v.z;
-      const dist = Math.hypot(toOtherX, toOtherZ);
-
-      if (dist < 18.0) {
-        // Project onto our heading to see if it's in front of us
-        const dotForward =
-          (toOtherX * travelDirX + toOtherZ * travelDirZ) / (dist || 1);
-        if (dotForward > 0.65) {
-          if (dist < 4.5) {
-            effectiveTargetSpeed = 0; // Hard brake to avoid clipping
-          } else if (dist < 10.0) {
-            effectiveTargetSpeed = Math.min(
-              effectiveTargetSpeed,
-              other.speed * 0.75
-            );
-          } else {
-            effectiveTargetSpeed = Math.min(
-              effectiveTargetSpeed,
-              other.speed + 1.5
-            );
-          }
-        }
-      }
+    if (leadCheck.gap <= 5.5) {
+      targetSpeed = 0; // Stop completely, maintain safe gap
+    } else if (leadCheck.gap <= 10.0) {
+      const ratio = (leadCheck.gap - 5.5) / 4.5;
+      targetSpeed = Math.min(
+        targetSpeed,
+        Math.max(0, leadCheck.leadSpeed * 0.7) * ratio
+      );
+    } else if (leadCheck.gap <= 18.0) {
+      targetSpeed = Math.min(
+        targetSpeed,
+        Math.max(2.5, leadCheck.leadSpeed * 0.9)
+      );
+    } else if (leadCheck.gap <= 24.0) {
+      targetSpeed = Math.min(
+        targetSpeed,
+        Math.max(4.0, leadCheck.leadSpeed + 1.5)
+      );
     }
 
-    // Check player vehicle ahead
-    if (playerCarPos) {
-      const toPlayerX = playerCarPos.x - v.x;
-      const toPlayerZ = playerCarPos.z - v.z;
-      const distToPlayer = Math.hypot(toPlayerX, toPlayerZ);
-
-      if (distToPlayer < 20.0) {
-        const dotForward =
-          (toPlayerX * travelDirX + toPlayerZ * travelDirZ) /
-          (distToPlayer || 1);
-        if (dotForward > 0.6) {
-          if (distToPlayer < 5.5) {
-            effectiveTargetSpeed = 0; // Stop behind player
-          } else if (distToPlayer < 12.0) {
-            effectiveTargetSpeed = Math.min(effectiveTargetSpeed, 2.5);
-          }
-        }
-      }
-    }
-
-    // B2. Smooth acceleration and braking
-    if (v.speed < effectiveTargetSpeed) {
-      v.speed = Math.min(effectiveTargetSpeed, v.speed + 3.2 * dt);
+    // Continuous delta-time acceleration & braking
+    if (v.speed < targetSpeed) {
+      const accel = v.type === 'truck' ? 3.5 : 4.8;
+      v.speed = Math.min(targetSpeed, v.speed + accel * dt);
     } else {
-      v.speed = Math.max(effectiveTargetSpeed, v.speed - 6.5 * dt);
+      const decel = targetSpeed === 0 ? 11.5 : 6.5;
+      v.speed = Math.max(0, v.speed - decel * dt);
     }
 
-    // B3. Advance distance along road
+    // Advance distance along road using delta time
     v.distanceAlongSegment += v.speed * dt;
 
-    // Check if reached junction / end of segment
+    // Check if reached end of segment / junction
     if (v.distanceAlongSegment >= seg.length) {
       this.handleReachSegmentEnd(v, seg);
       return;
     }
 
-    // B4. Compute current world position
-    const nodeA = this.nodes.get(seg.nodeAId)!;
-    const nodeB = this.nodes.get(seg.nodeBId)!;
-
+    // Compute current world position in right-hand lane
+    const nodeA = RoadGraph.getNode(seg.nodeAId)!;
     const s = v.forward
       ? v.distanceAlongSegment
       : seg.length - v.distanceAlongSegment;
-    const centerLineX = nodeA.x + seg.dirX * s;
-    const centerLineZ = nodeA.z + seg.dirZ * s;
 
-    // Offset to right-hand lane
+    const clampedS = Math.max(0, Math.min(seg.length, s));
+    const centerLineX = nodeA.x + seg.dirX * clampedS;
+    const centerLineZ = nodeA.z + seg.dirZ * clampedS;
+
     v.x = centerLineX + rightNormalX * laneOffset;
     v.z = centerLineZ + rightNormalZ * laneOffset;
+    v.y = this.roads.getSurfaceHeightAt(v.x, v.z);
 
-    // Yaw facing travel direction
-    v.yaw = Math.atan2(travelDirX, travelDirZ);
+    // Rotate to align with road height and driving vector
+    this.alignVehicleOrientation(v, forwardDirX, forwardDirZ, dt);
 
-    // Calculate surface height and slope pitch
-    const currentY = this.roads.getSurfaceHeightAt(v.x, v.z);
-    v.y = currentY;
-
-    const probeAheadDist = 2.5;
-    const aheadX = v.x + travelDirX * probeAheadDist;
-    const aheadZ = v.z + travelDirZ * probeAheadDist;
-    const aheadY = this.roads.getSurfaceHeightAt(aheadX, aheadZ);
-    const dy = aheadY - currentY;
-    v.pitch = -Math.atan2(dy, probeAheadDist); // Upward pitch tilts nose up
-
-    // Wheel rotation
-    v.wheelRotation += (v.speed / 0.32) * dt;
+    // Rotate wheels proportionally to linear travel
+    v.wheelRotation += (v.speed / 0.3) * dt;
   }
 
-  // Handle junction decision and initiate smooth Bézier curve turning
+  // Handle junction turning decision or cul-de-sac turnaround
   private handleReachSegmentEnd(
     v: TrafficVehicle,
     currentSeg: RoadGraphSegment
   ): void {
     const endNodeId = v.forward ? currentSeg.nodeBId : currentSeg.nodeAId;
-    const node = this.nodes.get(endNodeId);
+    const node = RoadGraph.getNode(endNodeId);
     if (!node) return;
 
-    // Connected segments at this junction
-    const availableSegIds = node.connections.filter(
-      (id) => id !== currentSeg.id
+    const currentDirFactor = v.forward ? 1 : -1;
+    const inHeading = new THREE.Vector3(
+      currentSeg.dirX * currentDirFactor,
+      0,
+      currentSeg.dirZ * currentDirFactor
     );
 
-    // If dead end, reverse direction along same segment
-    if (availableSegIds.length === 0) {
-      v.forward = !v.forward;
-      v.distanceAlongSegment = 0.5;
-      v.yaw += Math.PI;
+    // 1. CUL-DE-SAC / DEAD-END: Smooth 180° turnaround loop
+    if (node.isCulDeSac || node.connections.length <= 1) {
+      const radius = node.turningRadius || 8.0;
+      const startPos = new THREE.Vector3(v.x, v.y, v.z);
+
+      // Return position: opposite right-hand lane leaving the node
+      const returnDirFactor = -currentDirFactor;
+      const returnRightNormX = currentSeg.rightX * returnDirFactor;
+      const returnRightNormZ = currentSeg.rightZ * returnDirFactor;
+      const laneOffset = currentSeg.width * 0.25;
+
+      const targetX =
+        node.x + currentSeg.dirX * returnDirFactor * 1.5 + returnRightNormX * laneOffset;
+      const targetZ =
+        node.z + currentSeg.dirZ * returnDirFactor * 1.5 + returnRightNormZ * laneOffset;
+      const targetY = this.roads.getSurfaceHeightAt(targetX, targetZ);
+      const targetPos = new THREE.Vector3(targetX, targetY, targetZ);
+
+      const loopOutHeading = new THREE.Vector3(
+        currentSeg.dirX * returnDirFactor,
+        0,
+        currentSeg.dirZ * returnDirFactor
+      );
+
+      v.isTurning = true;
+      v.turnProgress = 0;
+      v.turnDistanceTraveled = 0;
+      v.turnP0 = startPos;
+      v.turnP1 = startPos.clone().addScaledVector(inHeading, radius * 0.9);
+      v.turnP2 = targetPos.clone().addScaledVector(loopOutHeading, -radius * 0.9);
+      v.turnP3 = targetPos;
+      v.turnArcLength = Math.PI * radius;
+      v.turnTargetSegmentId = currentSeg.id;
+      v.turnTargetForward = !v.forward;
       return;
     }
 
-    // Pick random connected segment
+    // 2. JUNCTION: Pick a random connected road (excluding the one just traveled)
+    const availableSegIds = node.connections.filter((id) => id !== currentSeg.id);
     const nextSegId =
-      availableSegIds[Math.floor(Math.random() * availableSegIds.length)];
-    const nextSeg = this.segments.get(nextSegId);
+      availableSegIds.length > 0
+        ? availableSegIds[Math.floor(Math.random() * availableSegIds.length)]
+        : currentSeg.id;
+
+    const nextSeg = RoadGraph.getSegment(nextSegId);
     if (!nextSeg) return;
 
-    // Determine target forward direction (leaves from this junction node)
-    const targetForward = nextSeg.nodeAId === endNodeId;
-
-    // Setup smooth turn arc
-    const startPos = new THREE.Vector3(v.x, v.y, v.z);
-    const dirFactor = v.forward ? 1 : -1;
-    const inHeading = new THREE.Vector3(
-      currentSeg.dirX * dirFactor,
-      0,
-      currentSeg.dirZ * dirFactor
-    );
-
-    const outDirFactor = targetForward ? 1 : -1;
+    // Moving outward from endNode
+    const nextForward = nextSeg.nodeAId === endNodeId;
+    const nextDirFactor = nextForward ? 1 : -1;
     const outHeading = new THREE.Vector3(
-      nextSeg.dirX * outDirFactor,
+      nextSeg.dirX * nextDirFactor,
       0,
-      nextSeg.dirZ * outDirFactor
+      nextSeg.dirZ * nextDirFactor
     );
 
-    // Target lane start position on next segment
-    const nextNodeStart = targetForward
-      ? this.nodes.get(nextSeg.nodeAId)!
-      : this.nodes.get(nextSeg.nodeBId)!;
-    const nextRightNormX = nextSeg.rightX * outDirFactor;
-    const nextRightNormZ = nextSeg.rightZ * outDirFactor;
+    const startPos = new THREE.Vector3(v.x, v.y, v.z);
+
+    // Target position: right-hand lane of next segment just past junction
+    const nextNodeStart = nextForward
+      ? RoadGraph.getNode(nextSeg.nodeAId)!
+      : RoadGraph.getNode(nextSeg.nodeBId)!;
+    const nextRightNormX = nextSeg.rightX * nextDirFactor;
+    const nextRightNormZ = nextSeg.rightZ * nextDirFactor;
     const nextLaneOffset = nextSeg.width * 0.25;
 
-    const targetPos = new THREE.Vector3(
-      nextNodeStart.x +
-        outHeading.x * 2.0 +
-        nextRightNormX * nextLaneOffset,
-      this.roads.getSurfaceHeightAt(nextNodeStart.x, nextNodeStart.z),
-      nextNodeStart.z +
-        outHeading.z * 2.0 +
-        nextRightNormZ * nextLaneOffset
-    );
+    const leadDistance = 2.0;
+    const targetX =
+      nextNodeStart.x + outHeading.x * leadDistance + nextRightNormX * nextLaneOffset;
+    const targetZ =
+      nextNodeStart.z + outHeading.z * leadDistance + nextRightNormZ * nextLaneOffset;
+    const targetY = this.roads.getSurfaceHeightAt(targetX, targetZ);
+    const targetPos = new THREE.Vector3(targetX, targetY, targetZ);
 
     const turnDist = startPos.distanceTo(targetPos);
-    const tangentScale = Math.max(2.0, turnDist * 0.45);
+    const tangentScale = Math.max(1.8, turnDist * 0.45);
 
     v.isTurning = true;
     v.turnProgress = 0;
-    v.turnDuration = Math.max(1.2, turnDist / Math.max(3.5, v.speed));
+    v.turnDistanceTraveled = 0;
     v.turnP0 = startPos;
     v.turnP1 = startPos.clone().addScaledVector(inHeading, tangentScale);
     v.turnP2 = targetPos.clone().addScaledVector(outHeading, -tangentScale);
     v.turnP3 = targetPos;
+    v.turnArcLength = Math.max(2.5, turnDist * 1.15);
     v.turnTargetSegmentId = nextSegId;
-    v.turnTargetForward = targetForward;
+    v.turnTargetForward = nextForward;
   }
 
   // Attempt to spawn a new vehicle on a valid road segment near the player/drone
-  private trySpawnVehicleNear(focusPos: THREE.Vector3): void {
-    // Filter segments within [40m, 280m] of focus position
-    const candidateSegments = this.segmentList.filter((seg) => {
-      const nodeA = this.nodes.get(seg.nodeAId)!;
-      const nodeB = this.nodes.get(seg.nodeBId)!;
+  private trySpawnVehicleNear(focusPos: THREE.Vector3, isSeeding = false): void {
+    const segments = RoadGraph.getAllSegments();
+    if (segments.length === 0) return;
+
+    // Filter segments within [30m, 290m] of focus position
+    const candidateSegments = segments.filter((seg) => {
+      const nodeA = RoadGraph.getNode(seg.nodeAId)!;
+      const nodeB = RoadGraph.getNode(seg.nodeBId)!;
       const midX = (nodeA.x + nodeB.x) / 2;
       const midZ = (nodeA.z + nodeB.z) / 2;
       const dist = Math.hypot(midX - focusPos.x, midZ - focusPos.z);
-      return dist >= 35 && dist <= 270;
+      return isSeeding ? dist <= 280 : dist >= 35 && dist <= 280;
     });
 
     if (candidateSegments.length === 0) return;
@@ -1128,8 +870,8 @@ export class TrafficSystem {
     for (let i = 0; i < this.vehicles.length; i++) {
       const other = this.vehicles[i];
       if (other.segmentId === seg.id && other.forward === forward) {
-        if (Math.abs(other.distanceAlongSegment - distAlong) < 16.0) {
-          return; // Too close, skip
+        if (Math.abs(other.distanceAlongSegment - distAlong) < 14.0) {
+          return;
         }
       }
     }
@@ -1156,7 +898,7 @@ export class TrafficSystem {
         ];
     }
 
-    const nodeA = this.nodes.get(seg.nodeAId)!;
+    const nodeA = RoadGraph.getNode(seg.nodeAId)!;
     const dirFactor = forward ? 1 : -1;
     const rightNormalX = seg.rightX * dirFactor;
     const rightNormalZ = seg.rightZ * dirFactor;
@@ -1168,6 +910,19 @@ export class TrafficSystem {
     const x = cx + rightNormalX * laneOffset;
     const z = cz + rightNormalZ * laneOffset;
     const y = this.roads.getSurfaceHeightAt(x, z);
+    const forwardDirX = seg.dirX * dirFactor;
+    const forwardDirZ = seg.dirZ * dirFactor;
+    const latNormX = -forwardDirZ;
+    const latNormZ = forwardDirX;
+
+    const probe = 1.6;
+    const yAhead = this.roads.getSurfaceHeightAt(x + forwardDirX * probe, z + forwardDirZ * probe);
+    const yRear = this.roads.getSurfaceHeightAt(x - forwardDirX * probe, z - forwardDirZ * probe);
+    const yLeft = this.roads.getSurfaceHeightAt(x - latNormX * 0.8, z - latNormZ * 0.8);
+    const yRight = this.roads.getSurfaceHeightAt(x + latNormX * 0.8, z + latNormZ * 0.8);
+
+    const initialPitch = THREE.MathUtils.clamp(-Math.atan2(yAhead - yRear, probe * 2.0), -0.45, 0.45);
+    const initialRoll = THREE.MathUtils.clamp(Math.atan2(yRight - yLeft, 1.6), -0.35, 0.35);
 
     const v: TrafficVehicle = {
       id: this.nextVehicleId++,
@@ -1177,16 +932,18 @@ export class TrafficSystem {
       segmentId: seg.id,
       forward,
       distanceAlongSegment: distAlong,
-      speed: seg.speedLimit * (0.65 + Math.random() * 0.25),
+      speed: seg.speedLimit * (0.8 + Math.random() * 0.2), // Already moving at driving speed!
       targetSpeed: seg.speedLimit,
       x,
       y,
       z,
       yaw: Math.atan2(seg.dirX * dirFactor, seg.dirZ * dirFactor),
-      pitch: 0,
+      pitch: initialPitch,
+      roll: initialRoll,
       isTurning: false,
       turnProgress: 0,
-      turnDuration: 2.0,
+      turnDistanceTraveled: 0,
+      turnArcLength: 2.0,
       turnP0: new THREE.Vector3(),
       turnP1: new THREE.Vector3(),
       turnP2: new THREE.Vector3(),
@@ -1209,7 +966,7 @@ export class TrafficSystem {
       const v = this.vehicles[i];
 
       this.dummyObj.position.set(v.x, v.y, v.z);
-      this.dummyObj.rotation.set(v.pitch, v.yaw, 0, 'YXZ');
+      this.dummyObj.rotation.set(v.pitch, v.yaw, v.roll, 'YXZ');
       this.dummyObj.scale.set(1, 1, 1);
       this.dummyObj.updateMatrix();
 
@@ -1264,7 +1021,7 @@ export class TrafficSystem {
     }
   }
 
-  // Set Traffic Density and persist setting
+  // Set Traffic Density
   public setDensity(density: TrafficDensity): void {
     this.density = density;
     this.fpsThrottleOffset = 0;
@@ -1280,25 +1037,10 @@ export class TrafficSystem {
     }
   }
 
-  // Get active vehicle count for telemetry / HUD display
   public getActiveCount(): number {
     return this.vehicles.length;
   }
 
-  // Get breakdown of vehicle types for diagnostics
-  public getCountsByType(): { taxis: number; cars: number; trucks: number } {
-    let taxis = 0;
-    let cars = 0;
-    let trucks = 0;
-    for (let i = 0; i < this.vehicles.length; i++) {
-      if (this.vehicles[i].type === 'taxi') taxis++;
-      else if (this.vehicles[i].type === 'car') cars++;
-      else if (this.vehicles[i].type === 'truck') trucks++;
-    }
-    return { taxis, cars, trucks };
-  }
-
-  // Clean up resources on disposal
   public dispose(): void {
     [
       this.taxiBodyInst,

@@ -43,7 +43,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
 
   const joyTouchId = useRef<number | null>(null);
   const joyOrigin = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const maxJoyRadius = 58;
+  const maxJoyRadius = 48;
   const deadzoneRatio = 0.08;
 
   const lookPointers = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -273,26 +273,26 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         onPointerCancel={handleJoyEnd}
         onLostPointerCapture={resetJoystick}
         style={{
-          bottom: 'max(1.5rem, calc(env(safe-area-inset-bottom, 0px) + 1.25rem))',
-          left: 'max(1.25rem, calc(env(safe-area-inset-left, 0px) + 1rem))',
+          bottom: 'max(1rem, calc(env(safe-area-inset-bottom, 0px) + 0.75rem))',
+          left: 'max(1rem, calc(env(safe-area-inset-left, 0px) + 0.75rem))',
         }}
         className="
           absolute
-          w-38 h-38 sm:w-44 sm:h-44 rounded-full
-          bg-slate-950/65 backdrop-blur-md
+          w-32 h-32 sm:w-36 sm:h-36 rounded-full
+          bg-slate-950/70 backdrop-blur-md
           border-2 border-white/25 shadow-2xl
           flex items-center justify-center
           pointer-events-auto
         "
         aria-label={isDriving ? 'Steering joystick' : 'Movement joystick'}
       >
-        <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border border-white/15 flex items-center justify-center">
-          <span className="text-[10px] sm:text-xs font-mono uppercase tracking-widest text-white/40 -translate-y-10 sm:-translate-y-12 font-bold">
+        <div className="w-20 h-20 sm:w-22 sm:h-22 rounded-full border border-white/15 flex items-center justify-center">
+          <span className="text-[10px] sm:text-xs font-mono uppercase tracking-widest text-white/40 -translate-y-8 sm:-translate-y-9 font-bold">
             {isDriving
-              ? 'STEER / DRIVE'
+              ? 'STEER'
               : cameraMode === 'DRONE'
                 ? 'FLY'
-                : 'FWD'}
+                : 'MOVE'}
           </span>
         </div>
 
@@ -301,7 +301,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
             transform: `translate3d(${joyKnob.x}px, ${joyKnob.y}px, 0)`,
           }}
           className={`
-            absolute w-18 h-18 sm:w-20 sm:h-20 rounded-full shadow-2xl border-2 transition-colors duration-75
+            absolute w-14 h-14 sm:w-16 sm:h-16 rounded-full shadow-2xl border-2 transition-colors duration-75
             flex items-center justify-center
             ${
               isDriving
@@ -312,24 +312,24 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
             }
           `}
         >
-          <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-full bg-slate-900/30 border border-slate-950/40" />
+          <div className="w-5 h-5 sm:w-6 sm:h-6 rounded-full bg-slate-900/30 border border-slate-950/40" />
         </div>
       </div>
 
-      {/* Contextual Action Cluster (Bottom-Right): Enlarged with Thumb Ergonomics & Safe-Area Bounds */}
+      {/* Contextual Action Cluster (Bottom-Right): Ergonomic Thumb Layout within Safe Areas */}
       <div
         style={{
-          bottom: 'max(1.5rem, calc(env(safe-area-inset-bottom, 0px) + 1.25rem))',
-          right: 'max(1.25rem, calc(env(safe-area-inset-right, 0px) + 1rem))',
+          bottom: 'max(1rem, calc(env(safe-area-inset-bottom, 0px) + 0.75rem))',
+          right: 'max(1rem, calc(env(safe-area-inset-right, 0px) + 0.75rem))',
         }}
-        className="absolute flex flex-col items-end gap-3 pointer-events-auto"
+        className="absolute flex flex-col items-end gap-2.5 pointer-events-auto"
       >
         {cameraMode === 'CINEMATIC' && (
-          <div className="flex flex-wrap justify-end gap-1.5 bg-slate-950/80 backdrop-blur-md p-2.5 rounded-2xl border border-white/15 shadow-xl">
+          <div className="flex flex-wrap justify-end gap-1.5 bg-slate-950/80 backdrop-blur-md p-2 rounded-xl border border-white/15 shadow-xl max-w-[280px]">
             {[
               { idx: 0, label: 'Auto' },
               { idx: 1, label: 'Orbit' },
-              { idx: 2, label: 'Close-Up Face' },
+              { idx: 2, label: 'Close-Up' },
               { idx: 3, label: 'Low Track' },
               { idx: 4, label: 'City Pan' },
             ].map((shot) => (
@@ -337,7 +337,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                 key={shot.idx}
                 type="button"
                 onClick={() => onSelectCinematicShot(shot.idx)}
-                className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors ${
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                   cinematicShotIndex === shot.idx
                     ? 'bg-amber-500 text-slate-950'
                     : 'bg-white/10 text-white/90 hover:bg-white/20'
@@ -350,14 +350,15 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         )}
 
         {cameraMode === 'DRONE' ? (
-          /* Aerial Drone Altitude & Boost Controls: Significantly Enlarged for Easy Thumb Access */
-          <div className="flex items-center gap-3.5">
+          /* Drone Thumb Controls: Fast on left, Vertical Stack (Ascend/Down) on right */
+          <div className="flex items-end gap-2.5">
+            {/* Fast Drone Thrusters */}
             <button
               type="button"
               onClick={toggleSprint}
               className={`
-                w-20 h-20 sm:w-24 sm:h-24 rounded-2xl backdrop-blur-md border-2 shadow-2xl
-                flex flex-col items-center justify-center gap-1 transition-transform active:scale-95
+                w-15 h-15 sm:w-16 sm:h-16 rounded-2xl backdrop-blur-md border-2 shadow-2xl
+                flex flex-col items-center justify-center gap-0.5 transition-transform active:scale-95
                 ${
                   sprintToggle || isSprinting
                     ? 'bg-amber-500/90 border-amber-200 text-slate-950 shadow-amber-500/30 font-bold'
@@ -366,67 +367,63 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
               `}
               title="Fast Drone Thrusters"
             >
-              <Zap className="w-6 h-6" />
-              <span className="text-xs font-bold tracking-tight">
-                Fast
-              </span>
+              <Zap className="w-5 h-5" />
+              <span className="text-[11px] font-bold tracking-tight">Fast</span>
             </button>
 
-            <button
-              type="button"
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                inputRef.current.droneVertical = -1;
-              }}
-              onPointerUp={() => {
-                inputRef.current.droneVertical = 0;
-              }}
-              onPointerCancel={() => {
-                inputRef.current.droneVertical = 0;
-              }}
-              className="
-                w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-slate-950/70 backdrop-blur-md
-                border-2 border-white/30 text-white shadow-2xl
-                flex flex-col items-center justify-center gap-1 active:scale-95
-              "
-              title="Descend Drone"
-            >
-              <ArrowDown className="w-6 h-6" />
-              <span className="text-xs font-bold tracking-tight">
-                Down
-              </span>
-            </button>
+            {/* Vertical Stack: Ascend on Top, Down on Bottom */}
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  inputRef.current.droneVertical = 1;
+                }}
+                onPointerUp={() => {
+                  inputRef.current.droneVertical = 0;
+                }}
+                onPointerCancel={() => {
+                  inputRef.current.droneVertical = 0;
+                }}
+                className="
+                  w-15 h-15 sm:w-16 sm:h-16 rounded-2xl bg-sky-500/90 backdrop-blur-md
+                  border-2 border-sky-200 text-slate-950 shadow-2xl shadow-sky-500/30
+                  flex flex-col items-center justify-center gap-0.5 active:scale-95
+                "
+                title="Ascend Drone"
+              >
+                <ArrowUp className="w-5 h-5" />
+                <span className="text-[11px] font-black tracking-tight">Ascend</span>
+              </button>
 
-            <button
-              type="button"
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                inputRef.current.droneVertical = 1;
-              }}
-              onPointerUp={() => {
-                inputRef.current.droneVertical = 0;
-              }}
-              onPointerCancel={() => {
-                inputRef.current.droneVertical = 0;
-              }}
-              className="
-                w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-sky-500/85 backdrop-blur-md
-                border-2 border-sky-200 text-slate-950 shadow-2xl shadow-sky-500/30
-                flex flex-col items-center justify-center gap-1 active:scale-95
-              "
-              title="Ascend Drone"
-            >
-              <ArrowUp className="w-6 h-6" />
-              <span className="text-xs font-extrabold tracking-tight">
-                Ascend
-              </span>
-            </button>
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  inputRef.current.droneVertical = -1;
+                }}
+                onPointerUp={() => {
+                  inputRef.current.droneVertical = 0;
+                }}
+                onPointerCancel={() => {
+                  inputRef.current.droneVertical = 0;
+                }}
+                className="
+                  w-15 h-15 sm:w-16 sm:h-16 rounded-2xl bg-slate-950/75 backdrop-blur-md
+                  border-2 border-white/30 text-white shadow-2xl
+                  flex flex-col items-center justify-center gap-0.5 active:scale-95
+                "
+                title="Descend Drone"
+              >
+                <ArrowDown className="w-5 h-5" />
+                <span className="text-[11px] font-bold tracking-tight">Down</span>
+              </button>
+            </div>
           </div>
         ) : isDriving ? (
-          /* 4x4 SUV VEHICLE DRIVING CONTROLS (Exit Car, Horn, Brake/Reverse, Gas Pedal) */
+          /* 4x4 Driving Controls */
           <>
-            <div className="flex items-center gap-3">
-              {/* Car Horn Button */}
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onPointerDown={(e) => {
@@ -434,17 +431,16 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   inputRef.current.vehicleHornRequested = true;
                 }}
                 className="
-                  h-12 px-4 rounded-2xl bg-slate-950/80 backdrop-blur-md
+                  h-10 px-3 rounded-xl bg-slate-950/80 backdrop-blur-md
                   border border-white/20 text-amber-300 shadow-xl
-                  flex items-center gap-2 active:scale-95
+                  flex items-center gap-1.5 active:scale-95 text-xs font-semibold
                 "
                 title="Honk Horn (H)"
               >
                 <Volume2 className="w-4 h-4" />
-                <span className="text-xs font-bold">Horn</span>
+                <span>Horn</span>
               </button>
 
-              {/* Exit Vehicle Button */}
               <button
                 type="button"
                 onPointerDown={(e) => {
@@ -452,20 +448,17 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   inputRef.current.interactRequested = true;
                 }}
                 className="
-                  h-12 px-5 rounded-2xl bg-rose-500/90 backdrop-blur-md
-                  border-2 border-rose-200 text-white shadow-2xl
-                  flex items-center gap-2 active:scale-95
+                  h-10 px-3.5 rounded-xl bg-rose-500/90 backdrop-blur-md
+                  border-2 border-rose-200 text-white shadow-xl
+                  flex items-center gap-1.5 active:scale-95 text-xs font-bold
                 "
               >
-                <LogOut className="w-4 h-4" />
-                <span className="text-xs font-extrabold tracking-tight">
-                  Exit Car ({vehicleSpeedKmh} km/h)
-                </span>
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Exit ({vehicleSpeedKmh} km/h)</span>
               </button>
             </div>
 
-            <div className="flex items-center gap-3.5">
-              {/* Brake / Reverse Pedal */}
+            <div className="flex items-center gap-2.5">
               <button
                 type="button"
                 onPointerDown={(e) => {
@@ -482,18 +475,15 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   inputRef.current.vehicleBrake = 0;
                 }}
                 className="
-                  w-22 h-20 sm:w-26 sm:h-24 px-3 rounded-2xl bg-amber-600/90 backdrop-blur-md
+                  w-18 h-18 sm:w-20 sm:h-20 rounded-2xl bg-amber-600/90 backdrop-blur-md
                   border-2 border-amber-300 text-white shadow-2xl
                   flex flex-col items-center justify-center gap-0.5 active:scale-95
                 "
               >
-                <ArrowDown className="w-6 h-6" />
-                <span className="text-[11px] font-extrabold tracking-tight">
-                  BRAKE / REV
-                </span>
+                <ArrowDown className="w-5 h-5" />
+                <span className="text-[10px] font-extrabold tracking-tight">BRAKE</span>
               </button>
 
-              {/* Gas / Accelerate Pedal */}
               <button
                 type="button"
                 onPointerDown={(e) => {
@@ -510,20 +500,18 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   inputRef.current.vehicleThrottle = 0;
                 }}
                 className="
-                  w-24 h-22 sm:w-28 sm:h-26 rounded-2xl bg-emerald-500/95 backdrop-blur-md
+                  w-18 h-18 sm:w-20 sm:h-20 rounded-2xl bg-emerald-500/95 backdrop-blur-md
                   border-2 border-emerald-200 text-slate-950 shadow-2xl shadow-emerald-500/30
                   flex flex-col items-center justify-center gap-0.5 active:scale-95
                 "
               >
-                <ArrowUp className="w-7 h-7" />
-                <span className="text-xs font-black tracking-wider">
-                  GAS
-                </span>
+                <ArrowUp className="w-6 h-6" />
+                <span className="text-[11px] font-black tracking-wider">GAS</span>
               </button>
             </div>
           </>
         ) : (
-          /* ON-FOOT PLAYER CONTROLS (Enter Car / Interact, Sprint, Jump) */
+          /* On-Foot Player Controls */
           <>
             <button
               type="button"
@@ -532,8 +520,8 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                 inputRef.current.interactRequested = true;
               }}
               className={`
-                h-14 px-5 rounded-2xl backdrop-blur-md border-2 shadow-2xl
-                flex items-center gap-2.5 transition-all duration-150 active:scale-95
+                h-11 px-4 rounded-xl backdrop-blur-md border-2 shadow-2xl
+                flex items-center gap-2 transition-all duration-150 active:scale-95
                 ${
                   isNearVehicle
                     ? 'bg-emerald-500/95 border-emerald-200 text-slate-950 animate-pulse font-extrabold'
@@ -545,11 +533,11 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
               aria-label="Interact with nearby object or vehicle"
             >
               {isNearVehicle ? (
-                <Car className="w-5 h-5" />
+                <Car className="w-4 h-4" />
               ) : (
-                <Hand className="w-5 h-5" />
+                <Hand className="w-4 h-4" />
               )}
-              <span className="text-xs sm:text-sm font-bold tracking-tight">
+              <span className="text-xs font-bold tracking-tight">
                 {isNearVehicle
                   ? 'Enter 4x4 Car'
                   : nearbyInteractable
@@ -558,7 +546,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
               </span>
             </button>
 
-            <div className="flex items-center gap-3.5">
+            <div className="flex items-center gap-2.5">
               <button
                 type="button"
                 onClick={toggleSprint}
@@ -571,8 +559,8 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   if (!sprintToggle) inputRef.current.sprintActive = false;
                 }}
                 className={`
-                  w-20 h-20 sm:w-22 sm:h-22 rounded-2xl backdrop-blur-md border-2 shadow-2xl
-                  flex flex-col items-center justify-center gap-1 transition-transform active:scale-95
+                  w-16 h-16 sm:w-18 sm:h-18 rounded-2xl backdrop-blur-md border-2 shadow-2xl
+                  flex flex-col items-center justify-center gap-0.5 transition-transform active:scale-95
                   ${
                     sprintToggle || isSprinting
                       ? 'bg-amber-500/90 border-amber-200 text-slate-950 font-bold shadow-amber-500/30'
@@ -581,10 +569,8 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                 `}
                 aria-label="Sprint"
               >
-                <Zap className="w-6 h-6" />
-                <span className="text-[11px] font-bold tracking-tight">
-                  Sprint
-                </span>
+                <Zap className="w-5 h-5" />
+                <span className="text-[10px] font-bold tracking-tight">Sprint</span>
               </button>
 
               <button
@@ -594,17 +580,15 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   inputRef.current.jumpRequested = true;
                 }}
                 className="
-                  w-20 h-20 sm:w-22 sm:h-22 rounded-2xl bg-slate-950/70 backdrop-blur-md
+                  w-16 h-16 sm:w-18 sm:h-18 rounded-2xl bg-slate-950/70 backdrop-blur-md
                   border-2 border-white/30 text-white shadow-2xl
-                  flex flex-col items-center justify-center gap-1
+                  flex flex-col items-center justify-center gap-0.5
                   transition-transform active:scale-95 active:bg-white/20
                 "
                 aria-label="Jump"
               >
-                <ArrowUp className="w-6 h-6" />
-                <span className="text-[11px] font-bold tracking-tight">
-                  Jump
-                </span>
+                <ArrowUp className="w-5 h-5" />
+                <span className="text-[10px] font-bold tracking-tight">Jump</span>
               </button>
             </div>
           </>
