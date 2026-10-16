@@ -20,9 +20,9 @@ export class VehicleSystem {
   private frontAxleMesh!: THREE.Mesh;
   private rearAxleMesh!: THREE.Mesh;
 
-  // 4-Wheel Independent Ground-Locked Hierarchy:
-  // Each wheel assembly sits at local (wx, wheelRadius, wz) inside chassisGroup
-  // and dynamically adjusts its local Y so the tire bottom (y - wheelRadius) touches the exact surface underneath that wheel!
+  // 4-Wheel Direct Ground-Locked Hierarchy:
+  // Each wheel assembly sits in vehicle group space and directly links its world-space position
+  // to the road surface plane so tire bottoms touch the exact surface underneath each wheel.
   private frontLeftWheelRoot: THREE.Group;
   private frontRightWheelRoot: THREE.Group;
   private rearLeftWheelRoot: THREE.Group;
@@ -178,11 +178,11 @@ export class VehicleSystem {
 
     this.frontAxleMesh = new THREE.Mesh(axleGeo, underbodyFrameMat);
     this.frontAxleMesh.position.set(0, this.wheelRadius, -this.halfWheelBase);
-    this.chassisGroup.add(this.frontAxleMesh);
+    this.group.add(this.frontAxleMesh);
 
     this.rearAxleMesh = new THREE.Mesh(axleGeo, underbodyFrameMat);
     this.rearAxleMesh.position.set(0, this.wheelRadius, this.halfWheelBase);
-    this.chassisGroup.add(this.rearAxleMesh);
+    this.group.add(this.rearAxleMesh);
 
     // 2. Sculpted Lower Body & Recessed Wheel Wells so tires never intersect painted panels
     const centerBodyTub = new THREE.Mesh(
@@ -442,7 +442,7 @@ export class VehicleSystem {
     );
     this.frontLeftSteerPivot.add(createWheelSpinNode());
     this.frontLeftWheelRoot.add(this.frontLeftSteerPivot);
-    this.chassisGroup.add(this.frontLeftWheelRoot);
+    this.group.add(this.frontLeftWheelRoot);
 
     // Front Right Wheel: Root -> SteerPivot (Y-axis steer) -> SpinNode (X-axis spin)
     this.frontRightWheelRoot.position.set(
@@ -452,7 +452,7 @@ export class VehicleSystem {
     );
     this.frontRightSteerPivot.add(createWheelSpinNode());
     this.frontRightWheelRoot.add(this.frontRightSteerPivot);
-    this.chassisGroup.add(this.frontRightWheelRoot);
+    this.group.add(this.frontRightWheelRoot);
 
     // Rear Left Wheel: Root -> SpinNode (X-axis spin)
     this.rearLeftWheelRoot.position.set(
@@ -461,7 +461,7 @@ export class VehicleSystem {
       this.halfWheelBase
     );
     this.rearLeftWheelRoot.add(createWheelSpinNode());
-    this.chassisGroup.add(this.rearLeftWheelRoot);
+    this.group.add(this.rearLeftWheelRoot);
 
     // Rear Right Wheel: Root -> SpinNode (X-axis spin)
     this.rearRightWheelRoot.position.set(
@@ -470,7 +470,7 @@ export class VehicleSystem {
       this.halfWheelBase
     );
     this.rearRightWheelRoot.add(createWheelSpinNode());
-    this.chassisGroup.add(this.rearRightWheelRoot);
+    this.group.add(this.rearRightWheelRoot);
   }
 
   public setNightMode(nightActivation: number): void {
@@ -625,14 +625,14 @@ export class VehicleSystem {
     this.alignToRoadSurface();
   }
 
-  // Samples the exact road/terrain surface height under each of the 4 wheels in world space,
-  // aligns the vehicle position and orientation (pitch and roll) cleanly to the road mesh,
-  // and ensures wheels and axles remain solidly anchored to the chassis hubs.
+  // Samples the road/terrain surface height under each of the 4 wheels in world space,
+  // aligns the vehicle position and chassis orientation (pitch and roll) cleanly to the road plane,
+  // and directly links wheel and axle world-space positions to the road surface plane to fix floating or sinking wheels.
   public alignToRoadSurface(): void {
     const cosH = Math.cos(this.heading);
     const sinH = Math.sin(this.heading);
 
-    // Helper to convert local chassis (lx, lz) to world (wx, wz) for heading rotation around Y:
+    // Helper to convert local vehicle (lx, lz) to world (wx, wz) based on heading around Y:
     const sampleWheelGround = (lx: number, lz: number): number => {
       const wx = this.position.x + lx * cosH + lz * sinH;
       const wz = this.position.z - lx * sinH + lz * cosH;
@@ -653,8 +653,7 @@ export class VehicleSystem {
     const planeCenterY = 0.25 * (yFL + yFR + yRL + yRR);
     this.position.y = planeCenterY;
 
-    // Direct pitch and roll derived from road surface heights under the wheels:
-    // Clamped within realistic automotive gradient boundaries so the chassis never flips on collision steps
+    // Direct pitch and roll derived from road surface plane under the wheels
     const slopePitch = THREE.MathUtils.clamp(
       Math.atan2(avgFrontY - avgRearY, this.wheelBase),
       -0.45,
@@ -668,35 +667,65 @@ export class VehicleSystem {
 
     this.group.position.copy(this.position);
     this.group.rotation.y = this.heading;
+
+    this.chassisGroup.position.set(0, 0, 0);
     this.chassisGroup.rotation.x = slopePitch;
     this.chassisGroup.rotation.z = slopeRoll;
 
-    // Correctly anchored wheel transforms:
-    // Keep wheels and axles rigidly anchored to their exact chassis hubs!
-    // Eliminates all redundant constraints, non-planar clamping hacks, and sub-stepping artifacts that caused floating/sinking wheels.
+    // Directly link each wheel's world-space position to the road surface plane:
+    // In vehicle group space (where Y is world UP and group Y is this.position.y = planeCenterY),
+    // setting local Y = (yGround - this.position.y) + this.wheelRadius guarantees that
+    // the tire bottom world Y is identically yGround (road surface).
+    // Eliminates all complex sub-stepping calculations while preventing any floating or sinking wheels.
+    const wheelCenterFL = (yFL - this.position.y) + this.wheelRadius;
+    const wheelCenterFR = (yFR - this.position.y) + this.wheelRadius;
+    const wheelCenterRL = (yRL - this.position.y) + this.wheelRadius;
+    const wheelCenterRR = (yRR - this.position.y) + this.wheelRadius;
+
     this.frontLeftWheelRoot.position.set(
       -this.halfTrackWidth,
-      this.wheelRadius,
+      wheelCenterFL,
       -this.halfWheelBase
     );
+    this.frontLeftWheelRoot.rotation.x = slopePitch;
+    this.frontLeftWheelRoot.rotation.z = slopeRoll;
+
     this.frontRightWheelRoot.position.set(
       this.halfTrackWidth,
-      this.wheelRadius,
+      wheelCenterFR,
       -this.halfWheelBase
     );
+    this.frontRightWheelRoot.rotation.x = slopePitch;
+    this.frontRightWheelRoot.rotation.z = slopeRoll;
+
     this.rearLeftWheelRoot.position.set(
       -this.halfTrackWidth,
-      this.wheelRadius,
+      wheelCenterRL,
       this.halfWheelBase
     );
+    this.rearLeftWheelRoot.rotation.x = slopePitch;
+    this.rearLeftWheelRoot.rotation.z = slopeRoll;
+
     this.rearRightWheelRoot.position.set(
       this.halfTrackWidth,
-      this.wheelRadius,
+      wheelCenterRR,
       this.halfWheelBase
     );
+    this.rearRightWheelRoot.rotation.x = slopePitch;
+    this.rearRightWheelRoot.rotation.z = slopeRoll;
 
-    this.frontAxleMesh.position.set(0, this.wheelRadius, -this.halfWheelBase);
-    this.rearAxleMesh.position.set(0, this.wheelRadius, this.halfWheelBase);
+    // Link axle transforms directly to the left and right wheel hubs
+    const frontAxleCenterY = (wheelCenterFL + wheelCenterFR) * 0.5;
+    const frontAxleRoll = Math.atan2(wheelCenterFR - wheelCenterFL, this.halfTrackWidth * 2.0);
+    this.frontAxleMesh.position.set(0, frontAxleCenterY, -this.halfWheelBase);
+    this.frontAxleMesh.rotation.x = slopePitch;
+    this.frontAxleMesh.rotation.z = frontAxleRoll;
+
+    const rearAxleCenterY = (wheelCenterRL + wheelCenterRR) * 0.5;
+    const rearAxleRoll = Math.atan2(wheelCenterRR - wheelCenterRL, this.halfTrackWidth * 2.0);
+    this.rearAxleMesh.position.set(0, rearAxleCenterY, this.halfWheelBase);
+    this.rearAxleMesh.rotation.x = slopePitch;
+    this.rearAxleMesh.rotation.z = rearAxleRoll;
   }
 
   private resolveVehicleCollisions(colliders: ColliderBox[]): void {
