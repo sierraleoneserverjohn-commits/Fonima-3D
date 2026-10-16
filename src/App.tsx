@@ -4,7 +4,10 @@ import {
   Car,
   CloudRain,
   Compass,
+  Download,
   Map as MapIcon,
+  Maximize,
+  Minimize,
   Moon,
   Navigation,
   RotateCcw,
@@ -22,6 +25,7 @@ import {
   DEFAULT_CAMERA_SETTINGS,
   GameTelemetry,
   NavigationDestination,
+  TrafficDensity,
   WeatherCondition,
   WorldSettings,
   loadSavedCameraSettings,
@@ -30,11 +34,15 @@ import {
 import { WorldSystem } from './systems/World';
 import { MobileControls } from './systems/MobileControls';
 
-type ActiveModal = 'none' | 'camera' | 'weather_time' | 'map';
+type ActiveModal = 'none' | 'camera' | 'weather_time' | 'map' | 'traffic';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const worldRef = useRef<WorldSystem | null>(null);
+
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstalled, setIsInstalled] = useState<boolean>(false);
 
   const inputRef = useRef<ControlInputState>({
     moveX: 0,
@@ -88,11 +96,123 @@ export default function App() {
     cameraMode: camSettings.mode,
     audioEnabled: false,
     fps: 60,
+    trafficCount: 0,
+    trafficDensity: 'medium',
   });
 
   const [activeModal, setActiveModal] = useState<ActiveModal>('none');
   const [webglError, setWebglError] = useState<boolean>(false);
   const [canvasKey, setCanvasKey] = useState<number>(0);
+
+  // Keep screen awake using the Screen Wake Lock API while playing
+  useEffect(() => {
+    let wakeLockSentinel: any = null;
+    let isDisposed = false;
+
+    const requestWakeLock = async () => {
+      if (
+        'wakeLock' in navigator &&
+        document.visibilityState === 'visible' &&
+        !isDisposed
+      ) {
+        try {
+          wakeLockSentinel = await (navigator as any).wakeLock.request('screen');
+        } catch {
+          // Device power profile or background state prevented wake lock
+        }
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        requestWakeLock();
+      } else if (wakeLockSentinel) {
+        wakeLockSentinel.release().catch(() => {});
+        wakeLockSentinel = null;
+      }
+    };
+
+    requestWakeLock();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    const onFullscreenChange = () => {
+      const doc = document as any;
+      setIsFullscreen(
+        Boolean(
+          doc.fullscreenElement ||
+            doc.webkitFullscreenElement ||
+            doc.mozFullScreenElement
+        )
+      );
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+    const onBeforeInstall = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    const onAppInstalled = () => {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+    };
+    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    window.addEventListener('appinstalled', onAppInstalled);
+
+    return () => {
+      isDisposed = true;
+      if (wakeLockSentinel) {
+        wakeLockSentinel.release().catch(() => {});
+        wakeLockSentinel = null;
+      }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
+      window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('appinstalled', onAppInstalled);
+    };
+  }, []);
+
+  const handleToggleFullscreen = async () => {
+    try {
+      const doc = document as any;
+      const docEl = document.documentElement as any;
+      const isFull = Boolean(
+        doc.fullscreenElement ||
+          doc.webkitFullscreenElement ||
+          doc.mozFullScreenElement
+      );
+      if (!isFull) {
+        if (docEl.requestFullscreen) {
+          await docEl.requestFullscreen();
+        } else if (docEl.webkitRequestFullscreen) {
+          await docEl.webkitRequestFullscreen();
+        } else if (docEl.mozRequestFullScreen) {
+          await docEl.mozRequestFullScreen();
+        }
+      } else {
+        if (doc.exitFullscreen) {
+          await doc.exitFullscreen();
+        } else if (doc.webkitExitFullscreen) {
+          await doc.webkitExitFullscreen();
+        } else if (doc.mozCancelFullScreen) {
+          await doc.mozCancelFullScreen();
+        }
+      }
+    } catch (e) {
+      console.warn('Fullscreen toggle request was prevented:', e);
+    }
+  };
+
+  const handleInstallPwa = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+    }
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -182,13 +302,22 @@ export default function App() {
         world.handleResize(window.innerWidth, window.innerHeight);
       }
     };
+
+    const onOrientation = () => {
+      onResize();
+      setTimeout(onResize, 100);
+      setTimeout(onResize, 300);
+    };
+
     window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onOrientation);
 
     return () => {
       isDisposed = true;
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
       if (recoveryTimeoutId !== null) clearTimeout(recoveryTimeoutId);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onOrientation);
       canvas.removeEventListener('webglcontextlost', handleContextLost);
       canvas.removeEventListener('webglcontextrestored', handleContextRestored);
       world.dispose();
@@ -205,8 +334,18 @@ export default function App() {
   const updateWorldSetting = (partial: Partial<WorldSettings>) => {
     if (!worldRef.current) return;
     const updated = worldRef.current.lighting.updateWorldSettings(partial);
-    setWorldSettings({ ...updated });
-    setTelemetry((prev) => ({ ...prev, weather: updated.weather }));
+    if (partial.trafficDensity) {
+      worldRef.current.traffic.setDensity(partial.trafficDensity);
+      updated.trafficDensity = partial.trafficDensity;
+    }
+    setWorldSettings((prev) => ({ ...prev, ...updated }));
+    setTelemetry((prev) => ({
+      ...prev,
+      weather: updated.weather,
+      trafficDensity: updated.trafficDensity || prev.trafficDensity,
+      trafficCount:
+        worldRef.current?.traffic.getActiveCount() ?? prev.trafficCount,
+    }));
   };
 
   const handleSetDestination = (dest: NavigationDestination) => {
@@ -266,9 +405,13 @@ export default function App() {
     Math.max(8, Math.min(92, 50 + (worldZ / 95) * 40));
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-slate-950 select-none">
+    <div className="relative w-[100dvw] h-[100dvh] w-screen h-screen overflow-hidden bg-slate-950 select-none touch-none">
       {/* 3D WebGL Viewport Canvas */}
-      <canvas key={canvasKey} ref={canvasRef} className="block w-full h-full" />
+      <canvas
+        key={canvasKey}
+        ref={canvasRef}
+        className="block w-[100dvw] h-[100dvh] w-full h-full"
+      />
 
       {/* WebGL Context Lost Fallback Safety */}
       {webglError && (
@@ -295,12 +438,18 @@ export default function App() {
         </div>
       )}
 
-      {/* Top Bar Contract: Single-Row, 3-Zone Translucent HUD */}
+      {/* Top Bar Contract: Single-Row, 3-Zone Translucent HUD with Safe-Area Insets */}
       <header
+        style={{
+          paddingTop: 'max(0.35rem, env(safe-area-inset-top, 0px))',
+          paddingLeft: 'max(0.75rem, env(safe-area-inset-left, 0px))',
+          paddingRight: 'max(0.75rem, env(safe-area-inset-right, 0px))',
+          height: 'calc(3.25rem + env(safe-area-inset-top, 0px))',
+        }}
         className="
           fixed top-0 left-0 right-0 z-20
-          h-12 px-3 sm:px-4
-          bg-black/50 backdrop-blur-md border-b border-white/10
+          px-3 sm:px-4
+          bg-black/60 backdrop-blur-md border-b border-white/10
           flex items-center justify-between gap-2
         "
       >
@@ -444,6 +593,26 @@ export default function App() {
             )}
           </button>
 
+          {/* Traffic Density Settings Button */}
+          <button
+            type="button"
+            onClick={() =>
+              setActiveModal((m) => (m === 'traffic' ? 'none' : 'traffic'))
+            }
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+              activeModal === 'traffic'
+                ? 'bg-amber-500 text-slate-950 border-amber-300 font-semibold'
+                : 'bg-white/10 text-white hover:bg-white/15 border-white/15'
+            }`}
+            title="City Traffic & Vehicle Density"
+          >
+            <Car className="w-3.5 h-3.5 text-amber-300" />
+            <span className="hidden sm:inline">Traffic</span>
+            <span className="text-[10px] font-mono text-amber-200">
+              ({telemetry.trafficCount})
+            </span>
+          </button>
+
           {/* World Map & Navigation Button */}
           <button
             type="button"
@@ -471,11 +640,50 @@ export default function App() {
           >
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
+
+          {/* Fullscreen API Toggle Button */}
+          <button
+            type="button"
+            onClick={handleToggleFullscreen}
+            className={`p-1.5 rounded-lg border transition-colors ${
+              isFullscreen
+                ? 'bg-amber-500 text-slate-950 border-amber-300'
+                : 'bg-white/10 text-white hover:bg-white/15 border-white/15'
+            }`}
+            title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen Mode'}
+            aria-label="Toggle Fullscreen"
+          >
+            {isFullscreen ? (
+              <Minimize className="w-3.5 h-3.5" />
+            ) : (
+              <Maximize className="w-3.5 h-3.5" />
+            )}
+          </button>
+
+          {/* PWA Install Button (PWABuilder / Chromium Install Prompt) */}
+          {deferredPrompt && !isInstalled && (
+            <button
+              type="button"
+              onClick={handleInstallPwa}
+              className="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs border border-emerald-300 transition-colors flex items-center gap-1 whitespace-nowrap shadow-md"
+              title="Install Fonima 3D App to Home Screen"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Install</span>
+            </button>
+          )}
         </div>
       </header>
 
-      {/* Mobile Sub-Banner: Unboxed Street Name, Region & Active Destination Distance */}
-      <div className="fixed top-13 left-3 right-3 z-10 flex items-center justify-between pointer-events-none lg:hidden">
+      {/* Mobile Sub-Banner: Unboxed Street Name, Region & Active Destination Distance with Safe Area */}
+      <div
+        style={{
+          top: 'calc(3.5rem + env(safe-area-inset-top, 0px))',
+          left: 'max(0.75rem, env(safe-area-inset-left, 0px))',
+          right: 'max(0.75rem, env(safe-area-inset-right, 0px))',
+        }}
+        className="fixed z-10 flex items-center justify-between pointer-events-none lg:hidden"
+      >
         <div className="flex items-center gap-1.5 text-xs font-medium text-amber-300 drop-shadow">
           <Compass className="w-3.5 h-3.5 shrink-0" />
           <span className="truncate max-w-[205px]">{telemetry.zoneName}</span>
@@ -496,8 +704,11 @@ export default function App() {
       {/* Contextual Interaction Prompt Banner */}
       {telemetry.nearbyInteractable && (
         <div
+          style={{
+            top: 'calc(5.5rem + env(safe-area-inset-top, 0px))',
+          }}
           className="
-            fixed top-21 left-1/2 -translate-x-1/2 z-20
+            fixed left-1/2 -translate-x-1/2 z-20
             w-[90%] max-w-sm px-4 py-2.5 rounded-xl
             bg-slate-950/85 backdrop-blur-md border border-amber-400/40
             shadow-xl pointer-events-none text-center
@@ -515,8 +726,11 @@ export default function App() {
       {/* Story / Landmark / Region Arrival Toast */}
       {telemetry.lastInteractionMessage && !telemetry.nearbyInteractable && (
         <div
+          style={{
+            top: 'calc(5.5rem + env(safe-area-inset-top, 0px))',
+          }}
           className="
-            fixed top-21 left-1/2 -translate-x-1/2 z-20
+            fixed left-1/2 -translate-x-1/2 z-20
             w-[90%] max-w-md px-4 py-2.5 rounded-xl
             bg-slate-950/80 backdrop-blur-md border border-white/15
             shadow-lg pointer-events-none text-center
@@ -531,8 +745,12 @@ export default function App() {
       {/* MODAL 1: CAMERA STUDIO SETTINGS */}
       {activeModal === 'camera' && (
         <div
+          style={{
+            top: 'calc(3.75rem + env(safe-area-inset-top, 0px))',
+            right: 'max(0.75rem, env(safe-area-inset-right, 0px))',
+          }}
           className="
-            fixed top-16 right-3 sm:right-4 z-30
+            fixed z-30
             w-80 sm:w-96 p-4 rounded-2xl
             bg-slate-950/92 backdrop-blur-md border border-white/15
             shadow-2xl pointer-events-auto text-white
@@ -703,8 +921,12 @@ export default function App() {
       {/* MODAL 2: 24-HOUR DAY/NIGHT CYCLE & SIERRA LEONE WEATHER SYSTEM */}
       {activeModal === 'weather_time' && (
         <div
+          style={{
+            top: 'calc(3.75rem + env(safe-area-inset-top, 0px))',
+            right: 'max(0.75rem, env(safe-area-inset-right, 0px))',
+          }}
           className="
-            fixed top-16 right-3 sm:right-4 z-30
+            fixed z-30
             w-80 sm:w-96 p-4 rounded-2xl
             bg-slate-950/92 backdrop-blur-md border border-white/15
             shadow-2xl pointer-events-auto text-white
@@ -853,8 +1075,12 @@ export default function App() {
       {/* MODAL 3: CONNECTED SIERRA LEONE WORLD MAP & NAVIGATION (FREETOWN ↔ HIGHWAY ↔ BO CITY) */}
       {activeModal === 'map' && (
         <div
+          style={{
+            top: 'calc(3.75rem + env(safe-area-inset-top, 0px))',
+            right: 'max(0.75rem, env(safe-area-inset-right, 0px))',
+          }}
           className="
-            fixed top-16 right-3 sm:right-4 z-30
+            fixed z-30
             w-80 sm:w-96 p-4 rounded-2xl
             bg-slate-950/92 backdrop-blur-md border border-white/15
             shadow-2xl pointer-events-auto text-white
@@ -1038,6 +1264,104 @@ export default function App() {
                 ? `${telemetry.destination}: ${telemetry.distanceToDestinationMeters}m`
                 : 'Free Roam'}
             </span>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: TRAFFIC & VEHICLE DENSITY SETTINGS */}
+      {activeModal === 'traffic' && (
+        <div
+          style={{
+            top: 'calc(3.75rem + env(safe-area-inset-top, 0px))',
+            right: 'max(0.75rem, env(safe-area-inset-right, 0px))',
+          }}
+          className="
+            fixed z-30
+            w-80 sm:w-96 p-4 rounded-2xl
+            bg-slate-950/92 backdrop-blur-md border border-white/15
+            shadow-2xl pointer-events-auto text-white
+          "
+        >
+          <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-white/10">
+            <div>
+              <h2 className="text-sm font-semibold flex items-center gap-1.5">
+                <Car className="w-4 h-4 text-amber-400" />
+                City Traffic & Density
+              </h2>
+              <p className="text-[11px] text-slate-400">
+                AI Vehicles along Freetown, Highway & Bo City
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveModal('none')}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-xs text-slate-300 mb-2">
+              Traffic Density Setting (Saved locally)
+            </label>
+            <div className="grid grid-cols-4 gap-1.5">
+              {(
+                [
+                  ['off', 'Off', '0 cars'],
+                  ['low', 'Low', '~15'],
+                  ['medium', 'Med', '~30'],
+                  ['high', 'High', '~42'],
+                ] as [TrafficDensity, string, string][]
+              ).map(([dKey, dLabel, dSub]) => (
+                <button
+                  key={dKey}
+                  type="button"
+                  onClick={() => updateWorldSetting({ trafficDensity: dKey })}
+                  className={`py-2 px-1.5 rounded-xl text-xs font-medium border text-center transition-colors flex flex-col items-center justify-center ${
+                    (worldSettings.trafficDensity ||
+                      telemetry.trafficDensity) === dKey
+                      ? 'bg-amber-500 text-slate-950 border-amber-300 font-semibold'
+                      : 'bg-white/5 text-white/80 border-white/10 hover:bg-white/10'
+                  }`}
+                >
+                  <span>{dLabel}</span>
+                  <span className="text-[9px] opacity-75">{dSub}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-2 text-xs">
+            <div className="flex justify-between items-center">
+              <span className="text-slate-300">Active Road Vehicles</span>
+              <span className="font-mono text-amber-300 font-bold">
+                {telemetry.trafficCount} nearby
+              </span>
+            </div>
+
+            <div className="flex justify-between items-center">
+              <span className="text-slate-300">Vehicle Types</span>
+              <span className="text-slate-200 text-[11px]">
+                Yellow Taxis · Private Cars · Small Trucks
+              </span>
+            </div>
+
+            <div className="flex justify-between items-center pt-1 border-t border-white/10">
+              <span className="text-slate-300">Target 60 FPS Engine</span>
+              <span
+                className={`font-mono font-semibold ${
+                  telemetry.fps >= 50 ? 'text-emerald-400' : 'text-amber-300'
+                }`}
+              >
+                {telemetry.fps} FPS · Smooth Instancing
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-3 text-[11px] text-slate-400 leading-normal">
+            Cars drive on the right-hand lane, slow down smoothly for corners and
+            lead vehicles, and adapt dynamically to maintain phone performance.
           </div>
         </div>
       )}

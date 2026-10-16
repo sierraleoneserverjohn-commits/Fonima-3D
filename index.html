@@ -2,20 +2,78 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <title>Fonima 3D — Williams Street, Freetown</title>
-    <meta name="description" content="Playable 3D open-world prototype of No. 22 Williams Street, Fonima / Goderich, Freetown, Sierra Leone." />
+    <meta name="description" content="Playable 3D open-world adventure in Sierra Leone — explore No. 22 Williams Street, drive the 4x4 SUV along the highway, and reach Bo City." />
     <meta property="og:title" content="Fonima 3D — Williams Street, Freetown" />
-    <meta property="og:description" content="Playable 3D open-world prototype of No. 22 Williams Street, Fonima / Goderich, Freetown, Sierra Leone." />
+    <meta property="og:description" content="Playable 3D open-world adventure in Sierra Leone — explore No. 22 Williams Street, drive the 4x4 SUV along the highway, and reach Bo City." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- PWA & Mobile Web App Meta -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="theme-color" content="#020617" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Fonima 3D" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;600&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
+
+    <style>
+      :root {
+        --sat: env(safe-area-inset-top, 0px);
+        --sab: env(safe-area-inset-bottom, 0px);
+        --sal: env(safe-area-inset-left, 0px);
+        --sar: env(safe-area-inset-right, 0px);
+      }
+      html, body {
+        width: 100%;
+        height: 100%;
+        width: 100dvw;
+        height: 100dvh;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background-color: #020617;
+        touch-action: none;
+        overscroll-behavior: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+      }
+      #root {
+        width: 100%;
+        height: 100%;
+        width: 100dvw;
+        height: 100dvh;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+      }
+    </style>
   </head>
   <body class="bg-slate-950 text-white overflow-hidden select-none touch-none">
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="./src/main.tsx"></script>
+    <script>
+      // Register service worker for offline app-shell caching
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./sw.js', { scope: './' })
+            .then((reg) => {
+              console.log('Fonima 3D SW registered:', reg.scope);
+            })
+            .catch((err) => {
+              console.warn('SW registration failed:', err);
+            });
+        });
+      }
+    </script>
   </body>
 </html>
-

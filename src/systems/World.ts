@@ -19,6 +19,7 @@ import { CameraSystem } from './Camera';
 import { AudioSystem } from './Audio';
 import { VehicleSystem } from './Vehicle';
 import { WorldStreamingSystem } from './WorldStreaming';
+import { TrafficSystem } from './Traffic';
 
 export class WorldSystem {
   private scene: THREE.Scene;
@@ -30,6 +31,7 @@ export class WorldSystem {
   public player: PlayerSystem;
   public vehicle: VehicleSystem;
   public worldStreaming: WorldStreamingSystem;
+  public traffic: TrafficSystem;
   public cameraSystem: CameraSystem;
   public audio: AudioSystem;
 
@@ -59,7 +61,7 @@ export class WorldSystem {
       depth: true,
       stencil: false,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.35));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -86,6 +88,7 @@ export class WorldSystem {
       window.innerWidth / window.innerHeight
     );
     this.audio = new AudioSystem();
+    this.traffic = new TrafficSystem(this.scene, this.roads);
 
     this.freetownColliders = [
       ...this.environment.colliders,
@@ -435,13 +438,22 @@ export class WorldSystem {
     // Update 24-hour solar/lunar lighting & weather particles across Freetown, Highway & Bo
     this.lighting.update(safeDt, focusPos);
 
-    // Update World Streaming (loads nearby 100m chunks, unloads distant chunks, updates traffic & pedestrians)
+    // Update World Streaming (loads nearby 100m chunks, unloads distant chunks)
     this.worldStreaming.update(
       safeDt,
       focusPos,
       followPos,
       this.lighting.streetLightActivation,
       this.lighting.wetness
+    );
+
+    // Update Traffic System (Dynamic cars driving along roads with instanced rendering, right-hand rule, anti-collision, and 60 FPS auto-throttling)
+    this.traffic.update(
+      safeDt,
+      focusPos,
+      this.currentFps,
+      this.vehicle.position,
+      this.vehicle.isPlayerDriving
     );
 
     // Sync night lights, streetlights, house windows & wet road sheen
@@ -615,16 +627,20 @@ export class WorldSystem {
       cameraMode: camMode,
       audioEnabled: this.audio.getEnabled(),
       fps: this.currentFps,
+      trafficCount: this.traffic.getActiveCount(),
+      trafficDensity: this.traffic.density,
     };
   }
 
   public handleResize(width: number, height: number): void {
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(width, height);
     this.cameraSystem.handleResize(width, height);
   }
 
   public dispose(): void {
     this.saveCurrentProgress();
+    this.traffic.dispose();
     this.renderer.dispose();
   }
 }

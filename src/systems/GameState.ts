@@ -66,10 +66,13 @@ export interface CameraSettings {
   cinematicShotIndex: number; // 0 = Auto Cycle, 1 = Orbit, 2 = Close-Up Face, 3 = Low-Angle Tracking, 4 = Wide City Pan
 }
 
+export type TrafficDensity = 'off' | 'low' | 'medium' | 'high';
+
 export interface WorldSettings {
   dayDurationMinutes: number; // Default 30 minutes (configurable 15-30m)
   autoProgressTime: boolean;
   weather: WeatherCondition;
+  trafficDensity: TrafficDensity;
 }
 
 export interface SavedProgressState {
@@ -119,6 +122,8 @@ export interface GameTelemetry {
   cameraMode: CameraMode;
   audioEnabled: boolean;
   fps: number;
+  trafficCount: number;
+  trafficDensity: TrafficDensity;
 }
 
 export interface ControlInputState {
@@ -155,6 +160,7 @@ export const DEFAULT_WORLD_SETTINGS: WorldSettings = {
   dayDurationMinutes: 30,
   autoProgressTime: true,
   weather: 'clear',
+  trafficDensity: 'medium',
 };
 
 export const DEFAULT_PROGRESS_STATE: SavedProgressState = {

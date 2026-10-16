@@ -43,7 +43,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
 
   const joyTouchId = useRef<number | null>(null);
   const joyOrigin = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const maxJoyRadius = 46;
+  const maxJoyRadius = 58;
   const deadzoneRatio = 0.08;
 
   const lookPointers = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -249,35 +249,45 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
 
   return (
     <div className="fixed inset-0 pointer-events-none z-10 select-none touch-none">
-      {/* Right Half Touch Camera Rotate + 2-Finger Pinch Zoom Zone */}
+      {/* Right Half Touch Camera Rotate + 2-Finger Pinch Zoom Zone (Starts below top HUD to prevent conflict) */}
       <div
         onPointerDown={handleLookStart}
         onPointerMove={handleLookMove}
         onPointerUp={handleLookEnd}
         onPointerCancel={handleLookEnd}
-        className="absolute top-14 right-0 bottom-0 w-3/5 pointer-events-auto"
+        style={{
+          top: 'calc(3.5rem + env(safe-area-inset-top, 0px))',
+          right: 0,
+          bottom: 0,
+          width: '58%',
+        }}
+        className="absolute pointer-events-auto"
         aria-label="Touch camera look and pinch zoom area"
       />
 
-      {/* Left Virtual Movement / Steering Joystick */}
+      {/* Left Virtual Movement / Steering Joystick (Enlarged for Mobile Thumbs) */}
       <div
         onPointerDown={handleJoyStart}
         onPointerMove={handleJoyMove}
         onPointerUp={handleJoyEnd}
         onPointerCancel={handleJoyEnd}
         onLostPointerCapture={resetJoystick}
+        style={{
+          bottom: 'max(1.5rem, calc(env(safe-area-inset-bottom, 0px) + 1.25rem))',
+          left: 'max(1.25rem, calc(env(safe-area-inset-left, 0px) + 1rem))',
+        }}
         className="
-          absolute bottom-7 left-6 sm:bottom-9 sm:left-9
-          w-32 h-32 rounded-full
-          bg-slate-950/55 backdrop-blur-md
-          border-2 border-white/20 shadow-2xl
+          absolute
+          w-38 h-38 sm:w-44 sm:h-44 rounded-full
+          bg-slate-950/65 backdrop-blur-md
+          border-2 border-white/25 shadow-2xl
           flex items-center justify-center
           pointer-events-auto
         "
         aria-label={isDriving ? 'Steering joystick' : 'Movement joystick'}
       >
-        <div className="w-20 h-20 rounded-full border border-white/10 flex items-center justify-center">
-          <span className="text-[9px] font-mono uppercase tracking-widest text-white/30 -translate-y-8">
+        <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border border-white/15 flex items-center justify-center">
+          <span className="text-[10px] sm:text-xs font-mono uppercase tracking-widest text-white/40 -translate-y-10 sm:-translate-y-12 font-bold">
             {isDriving
               ? 'STEER / DRIVE'
               : cameraMode === 'DRONE'
@@ -291,25 +301,31 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
             transform: `translate3d(${joyKnob.x}px, ${joyKnob.y}px, 0)`,
           }}
           className={`
-            absolute w-14 h-14 rounded-full shadow-lg border-2 transition-colors duration-75
+            absolute w-18 h-18 sm:w-20 sm:h-20 rounded-full shadow-2xl border-2 transition-colors duration-75
             flex items-center justify-center
             ${
               isDriving
-                ? 'bg-emerald-400/95 border-emerald-200'
+                ? 'bg-emerald-400/95 border-emerald-200 shadow-emerald-500/30'
                 : isSprinting
-                  ? 'bg-amber-400/90 border-amber-200'
-                  : 'bg-white/85 border-white'
+                  ? 'bg-amber-400/95 border-amber-200 shadow-amber-500/30'
+                  : 'bg-white/90 border-white shadow-white/20'
             }
           `}
         >
-          <div className="w-5 h-5 rounded-full bg-slate-900/25 border border-slate-950/30" />
+          <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-full bg-slate-900/30 border border-slate-950/40" />
         </div>
       </div>
 
-      {/* Contextual Action Cluster (Bottom-Right): Adapts to Driving vs Walking vs Drone vs Cinematic */}
-      <div className="absolute bottom-7 right-6 sm:bottom-9 sm:right-9 flex flex-col items-end gap-3 pointer-events-auto">
+      {/* Contextual Action Cluster (Bottom-Right): Enlarged with Thumb Ergonomics & Safe-Area Bounds */}
+      <div
+        style={{
+          bottom: 'max(1.5rem, calc(env(safe-area-inset-bottom, 0px) + 1.25rem))',
+          right: 'max(1.25rem, calc(env(safe-area-inset-right, 0px) + 1rem))',
+        }}
+        className="absolute flex flex-col items-end gap-3 pointer-events-auto"
+      >
         {cameraMode === 'CINEMATIC' && (
-          <div className="flex flex-wrap justify-end gap-1.5 bg-slate-950/75 backdrop-blur-md p-2 rounded-2xl border border-white/15">
+          <div className="flex flex-wrap justify-end gap-1.5 bg-slate-950/80 backdrop-blur-md p-2.5 rounded-2xl border border-white/15 shadow-xl">
             {[
               { idx: 0, label: 'Auto' },
               { idx: 1, label: 'Orbit' },
@@ -321,10 +337,10 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                 key={shot.idx}
                 type="button"
                 onClick={() => onSelectCinematicShot(shot.idx)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors ${
+                className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors ${
                   cinematicShotIndex === shot.idx
-                    ? 'bg-amber-500 text-slate-950 font-semibold'
-                    : 'bg-white/10 text-white/85 hover:bg-white/20'
+                    ? 'bg-amber-500 text-slate-950'
+                    : 'bg-white/10 text-white/90 hover:bg-white/20'
                 }`}
               >
                 {shot.label}
@@ -334,23 +350,24 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         )}
 
         {cameraMode === 'DRONE' ? (
-          /* Aerial Drone Altitude & Boost Controls */
-          <div className="flex items-center gap-3">
+          /* Aerial Drone Altitude & Boost Controls: Significantly Enlarged for Easy Thumb Access */
+          <div className="flex items-center gap-3.5">
             <button
               type="button"
               onClick={toggleSprint}
               className={`
-                w-16 h-16 rounded-2xl backdrop-blur-md border-2 shadow-xl
-                flex flex-col items-center justify-center gap-0.5 transition-transform active:scale-95
+                w-20 h-20 sm:w-24 sm:h-24 rounded-2xl backdrop-blur-md border-2 shadow-2xl
+                flex flex-col items-center justify-center gap-1 transition-transform active:scale-95
                 ${
                   sprintToggle || isSprinting
-                    ? 'bg-amber-500/85 border-amber-200 text-slate-950'
-                    : 'bg-slate-950/60 border-white/20 text-white/85'
+                    ? 'bg-amber-500/90 border-amber-200 text-slate-950 shadow-amber-500/30 font-bold'
+                    : 'bg-slate-950/70 border-white/25 text-white/90'
                 }
               `}
+              title="Fast Drone Thrusters"
             >
-              <Zap className="w-5 h-5" />
-              <span className="text-[10px] font-semibold tracking-tight">
+              <Zap className="w-6 h-6" />
+              <span className="text-xs font-bold tracking-tight">
                 Fast
               </span>
             </button>
@@ -368,13 +385,14 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                 inputRef.current.droneVertical = 0;
               }}
               className="
-                w-16 h-16 rounded-2xl bg-slate-950/65 backdrop-blur-md
-                border-2 border-white/25 text-white shadow-xl
-                flex flex-col items-center justify-center gap-0.5 active:scale-95
+                w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-slate-950/70 backdrop-blur-md
+                border-2 border-white/30 text-white shadow-2xl
+                flex flex-col items-center justify-center gap-1 active:scale-95
               "
+              title="Descend Drone"
             >
-              <ArrowDown className="w-5 h-5" />
-              <span className="text-[10px] font-semibold tracking-tight">
+              <ArrowDown className="w-6 h-6" />
+              <span className="text-xs font-bold tracking-tight">
                 Down
               </span>
             </button>
@@ -392,13 +410,14 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                 inputRef.current.droneVertical = 0;
               }}
               className="
-                w-16 h-16 rounded-2xl bg-sky-500/80 backdrop-blur-md
-                border-2 border-sky-200 text-slate-950 shadow-xl
-                flex flex-col items-center justify-center gap-0.5 active:scale-95
+                w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-sky-500/85 backdrop-blur-md
+                border-2 border-sky-200 text-slate-950 shadow-2xl shadow-sky-500/30
+                flex flex-col items-center justify-center gap-1 active:scale-95
               "
+              title="Ascend Drone"
             >
-              <ArrowUp className="w-5 h-5" />
-              <span className="text-[10px] font-semibold tracking-tight">
+              <ArrowUp className="w-6 h-6" />
+              <span className="text-xs font-extrabold tracking-tight">
                 Ascend
               </span>
             </button>
@@ -406,7 +425,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         ) : isDriving ? (
           /* 4x4 SUV VEHICLE DRIVING CONTROLS (Exit Car, Horn, Brake/Reverse, Gas Pedal) */
           <>
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-3">
               {/* Car Horn Button */}
               <button
                 type="button"
@@ -415,14 +434,14 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   inputRef.current.vehicleHornRequested = true;
                 }}
                 className="
-                  h-11 px-3.5 rounded-2xl bg-slate-950/75 backdrop-blur-md
-                  border border-white/20 text-amber-300 shadow-lg
-                  flex items-center gap-1.5 active:scale-95
+                  h-12 px-4 rounded-2xl bg-slate-950/80 backdrop-blur-md
+                  border border-white/20 text-amber-300 shadow-xl
+                  flex items-center gap-2 active:scale-95
                 "
                 title="Honk Horn (H)"
               >
                 <Volume2 className="w-4 h-4" />
-                <span className="text-xs font-semibold">Horn</span>
+                <span className="text-xs font-bold">Horn</span>
               </button>
 
               {/* Exit Vehicle Button */}
@@ -433,19 +452,19 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   inputRef.current.interactRequested = true;
                 }}
                 className="
-                  h-11 px-4 rounded-2xl bg-rose-500/90 backdrop-blur-md
-                  border-2 border-rose-200 text-white shadow-xl
+                  h-12 px-5 rounded-2xl bg-rose-500/90 backdrop-blur-md
+                  border-2 border-rose-200 text-white shadow-2xl
                   flex items-center gap-2 active:scale-95
                 "
               >
                 <LogOut className="w-4 h-4" />
-                <span className="text-xs font-bold tracking-tight">
+                <span className="text-xs font-extrabold tracking-tight">
                   Exit Car ({vehicleSpeedKmh} km/h)
                 </span>
               </button>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3.5">
               {/* Brake / Reverse Pedal */}
               <button
                 type="button"
@@ -463,13 +482,13 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   inputRef.current.vehicleBrake = 0;
                 }}
                 className="
-                  w-18 h-16 px-3 rounded-2xl bg-amber-600/85 backdrop-blur-md
-                  border-2 border-amber-300 text-white shadow-xl
+                  w-22 h-20 sm:w-26 sm:h-24 px-3 rounded-2xl bg-amber-600/90 backdrop-blur-md
+                  border-2 border-amber-300 text-white shadow-2xl
                   flex flex-col items-center justify-center gap-0.5 active:scale-95
                 "
               >
-                <ArrowDown className="w-5 h-5" />
-                <span className="text-[10px] font-bold tracking-tight">
+                <ArrowDown className="w-6 h-6" />
+                <span className="text-[11px] font-extrabold tracking-tight">
                   BRAKE / REV
                 </span>
               </button>
@@ -491,13 +510,13 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   inputRef.current.vehicleThrottle = 0;
                 }}
                 className="
-                  w-20 h-20 rounded-2xl bg-emerald-500/90 backdrop-blur-md
-                  border-2 border-emerald-200 text-slate-950 shadow-2xl
+                  w-24 h-22 sm:w-28 sm:h-26 rounded-2xl bg-emerald-500/95 backdrop-blur-md
+                  border-2 border-emerald-200 text-slate-950 shadow-2xl shadow-emerald-500/30
                   flex flex-col items-center justify-center gap-0.5 active:scale-95
                 "
               >
-                <ArrowUp className="w-6 h-6" />
-                <span className="text-xs font-extrabold tracking-tight">
+                <ArrowUp className="w-7 h-7" />
+                <span className="text-xs font-black tracking-wider">
                   GAS
                 </span>
               </button>
@@ -513,24 +532,24 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                 inputRef.current.interactRequested = true;
               }}
               className={`
-                h-12 px-4 rounded-2xl backdrop-blur-md border-2 shadow-xl
-                flex items-center gap-2 transition-all duration-150 active:scale-95
+                h-14 px-5 rounded-2xl backdrop-blur-md border-2 shadow-2xl
+                flex items-center gap-2.5 transition-all duration-150 active:scale-95
                 ${
                   isNearVehicle
-                    ? 'bg-emerald-500/95 border-emerald-200 text-slate-950 animate-pulse'
+                    ? 'bg-emerald-500/95 border-emerald-200 text-slate-950 animate-pulse font-extrabold'
                     : nearbyInteractable
-                      ? 'bg-amber-500/90 border-amber-200 text-slate-950'
-                      : 'bg-slate-950/55 border-white/20 text-white/80'
+                      ? 'bg-amber-500/90 border-amber-200 text-slate-950 font-bold'
+                      : 'bg-slate-950/65 border-white/20 text-white/90 font-semibold'
                 }
               `}
               aria-label="Interact with nearby object or vehicle"
             >
               {isNearVehicle ? (
-                <Car className="w-4 h-4" />
+                <Car className="w-5 h-5" />
               ) : (
-                <Hand className="w-4 h-4" />
+                <Hand className="w-5 h-5" />
               )}
-              <span className="text-xs font-bold tracking-tight">
+              <span className="text-xs sm:text-sm font-bold tracking-tight">
                 {isNearVehicle
                   ? 'Enter 4x4 Car'
                   : nearbyInteractable
@@ -552,18 +571,18 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   if (!sprintToggle) inputRef.current.sprintActive = false;
                 }}
                 className={`
-                  w-16 h-16 rounded-2xl backdrop-blur-md border-2 shadow-xl
-                  flex flex-col items-center justify-center gap-0.5 transition-transform active:scale-95
+                  w-20 h-20 sm:w-22 sm:h-22 rounded-2xl backdrop-blur-md border-2 shadow-2xl
+                  flex flex-col items-center justify-center gap-1 transition-transform active:scale-95
                   ${
                     sprintToggle || isSprinting
-                      ? 'bg-amber-500/85 border-amber-200 text-slate-950'
-                      : 'bg-slate-950/60 border-white/20 text-white/85'
+                      ? 'bg-amber-500/90 border-amber-200 text-slate-950 font-bold shadow-amber-500/30'
+                      : 'bg-slate-950/65 border-white/25 text-white/90'
                   }
                 `}
                 aria-label="Sprint"
               >
-                <Zap className="w-5 h-5" />
-                <span className="text-[10px] font-semibold tracking-tight">
+                <Zap className="w-6 h-6" />
+                <span className="text-[11px] font-bold tracking-tight">
                   Sprint
                 </span>
               </button>
@@ -575,15 +594,15 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   inputRef.current.jumpRequested = true;
                 }}
                 className="
-                  w-16 h-16 rounded-2xl bg-slate-950/65 backdrop-blur-md
-                  border-2 border-white/25 text-white shadow-xl
-                  flex flex-col items-center justify-center gap-0.5
+                  w-20 h-20 sm:w-22 sm:h-22 rounded-2xl bg-slate-950/70 backdrop-blur-md
+                  border-2 border-white/30 text-white shadow-2xl
+                  flex flex-col items-center justify-center gap-1
                   transition-transform active:scale-95 active:bg-white/20
                 "
                 aria-label="Jump"
               >
-                <ArrowUp className="w-5 h-5" />
-                <span className="text-[10px] font-semibold tracking-tight">
+                <ArrowUp className="w-6 h-6" />
+                <span className="text-[11px] font-bold tracking-tight">
                   Jump
                 </span>
               </button>
