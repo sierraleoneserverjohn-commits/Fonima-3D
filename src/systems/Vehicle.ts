@@ -555,7 +555,14 @@ export class VehicleSystem {
 
     // 2. Longitudinal Acceleration, Braking & Reverse
     let accel = 0;
-    if (throttle > 0.05) {
+    if (input.vehicleHandbrake) {
+      if (Math.abs(this.speed) > 0.1) {
+        accel = -Math.sign(this.speed) * this.serviceBrakeDecel * 1.8;
+      } else {
+        this.speed = 0;
+      }
+      this.taillightBulbMat.emissiveIntensity = 4.0;
+    } else if (throttle > 0.05) {
       if (this.speed < -0.2) {
         accel = this.serviceBrakeDecel * throttle;
       } else {

@@ -31,6 +31,15 @@ jobs:
       - name: Add Android platform
         run: '[ -d android ] || npx cap add android'
 
+      - name: Set sensorLandscape orientation in AndroidManifest
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            if ! grep -q 'android:screenOrientation="sensorLandscape"' "$MANIFEST"; then
+              sed -i 's/<activity /<activity android:screenOrientation="sensorLandscape" /' "$MANIFEST"
+            fi
+          fi
+
       - name: Sync web build into Android
         run: npx cap sync android
 

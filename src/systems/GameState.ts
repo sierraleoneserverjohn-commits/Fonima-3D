@@ -37,7 +37,11 @@ export type GroundSurfaceType = 'asphalt' | 'concrete' | 'dirt' | 'grass';
 
 export type PlayerAnimState = 'IDLE' | 'WALK' | 'RUN' | 'SPRINT' | 'JUMP';
 
-export type CameraMode = 'THIRD_PERSON' | 'DRONE' | 'CINEMATIC';
+export type CameraMode =
+  | 'THIRD_PERSON'
+  | 'FIRST_PERSON'
+  | 'DRONE'
+  | 'CINEMATIC';
 
 export type WeatherCondition =
   | 'clear'
@@ -138,6 +142,7 @@ export interface ControlInputState {
   interactRequested: boolean;
   vehicleThrottle: number; // 0 to 1 explicit gas pedal
   vehicleBrake: number; // 0 to 1 explicit brake/reverse pedal
+  vehicleHandbrake: boolean; // explicit emergency / handbrake
   vehicleHornRequested: boolean;
 }
 

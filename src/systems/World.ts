@@ -20,6 +20,7 @@ import { AudioSystem } from './Audio';
 import { VehicleSystem } from './Vehicle';
 import { WorldStreamingSystem } from './WorldStreaming';
 import { TrafficSystem } from './Traffic';
+import { RoadGraph } from './RoadGraph';
 
 export class WorldSystem {
   private scene: THREE.Scene;
@@ -27,6 +28,7 @@ export class WorldSystem {
   public lighting: LightingSystem;
   public environment: EnvironmentSystem;
   public roads: RoadsSystem;
+  public roadGraph = RoadGraph;
   public buildings: BuildingsSystem;
   public player: PlayerSystem;
   public vehicle: VehicleSystem;
@@ -51,7 +53,14 @@ export class WorldSystem {
   private fpsAccumulator: number = 0;
   private currentFps: number = 60;
 
-  constructor(canvas: HTMLCanvasElement) {
+  public isTitleDriftActive: boolean = true;
+  private titleDriftTimer: number = 0;
+
+  constructor(
+    canvas: HTMLCanvasElement,
+    onProgress?: (percent: number, label: string) => void
+  ) {
+    onProgress?.(12, 'Initializing 3D renderer & scene...');
     this.scene = new THREE.Scene();
 
     this.renderer = new THREE.WebGLRenderer({
@@ -68,14 +77,20 @@ export class WorldSystem {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
 
+    onProgress?.(28, 'Loading Sierra Leone terrain & textures...');
     this.lighting = new LightingSystem(this.scene);
     this.environment = new EnvironmentSystem(this.scene);
+
+    onProgress?.(48, 'Generating road network & junctions...');
     this.roads = new RoadsSystem(
       this.scene,
       EnvironmentSystem.getTerrainHeight
     );
+
+    onProgress?.(68, 'Building Williams Street architecture...');
     this.buildings = new BuildingsSystem(this.scene);
-    this.player = new PlayerSystem(this.scene);
+
+    onProgress?.(82, 'Spawning vehicles & highway traffic...');
     this.vehicle = new VehicleSystem(
       this.scene,
       8.5,
@@ -84,11 +99,14 @@ export class WorldSystem {
       (x, z) => this.roads.getSurfaceHeightAt(x, z)
     );
     this.worldStreaming = new WorldStreamingSystem(this.scene);
+    this.traffic = new TrafficSystem(this.scene, this.roads);
+
+    onProgress?.(92, 'Initializing player & spatial audio...');
+    this.player = new PlayerSystem(this.scene);
     this.cameraSystem = new CameraSystem(
       window.innerWidth / window.innerHeight
     );
     this.audio = new AudioSystem();
-    this.traffic = new TrafficSystem(this.scene, this.roads);
 
     this.freetownColliders = [
       ...this.environment.colliders,
@@ -100,7 +118,99 @@ export class WorldSystem {
     ];
 
     this.restoreSavedProgress();
+    this.auditRoadNetworkGraph();
     this.precompileAndWarmUp();
+    onProgress?.(100, 'Ready');
+  }
+
+  public setTitleScreenMode(enabled: boolean): void {
+    this.isTitleDriftActive = enabled;
+    if (!enabled) {
+      this.precompileAndWarmUp();
+    }
+  }
+
+  public resetToNewGame(): void {
+    this.destination = 'BO';
+    this.hasVisitedBo = false;
+    this.player.position.set(0, 0, -1.8);
+    this.player.heading = 0;
+    this.player.group.position.set(0, 0, -1.8);
+    this.player.group.rotation.set(0, 0, 0);
+
+    const vx = 8.5;
+    const vz = -1.6;
+    const vy = this.roads.getSurfaceHeightAt(vx, vz);
+    this.vehicle.position.set(vx, vy, vz);
+    this.vehicle.heading = -Math.PI / 2;
+    this.vehicle.speed = 0;
+    this.vehicle.isPlayerDriving = false;
+    this.vehicle.alignToRoadSurface();
+    this.player.group.visible = true;
+
+    this.lighting.setTimeHours(10.5);
+    this.lighting.updateWorldSettings({ weather: 'clear' });
+    this.precompileAndWarmUp();
+    this.saveCurrentProgress();
+  }
+
+  // Audits the single-source-of-truth road network graph, verifying node existence,
+  // reciprocal edge connectivity, and consistent terrain mesh height lookups across all junctions
+  public auditRoadNetworkGraph(): {
+    isValid: boolean;
+    nodeCount: number;
+    segmentCount: number;
+    junctionCount: number;
+    errors: string[];
+  } {
+    RoadGraph.initialize();
+    const errors: string[] = [];
+    const nodes = RoadGraph.getAllNodes();
+    const segments = RoadGraph.getAllSegments();
+    let junctionCount = 0;
+
+    for (const seg of segments) {
+      const nA = RoadGraph.getNode(seg.nodeAId);
+      const nB = RoadGraph.getNode(seg.nodeBId);
+      if (!nA) {
+        errors.push(`Segment ${seg.id} references missing nodeA: ${seg.nodeAId}`);
+      }
+      if (!nB) {
+        errors.push(`Segment ${seg.id} references missing nodeB: ${seg.nodeBId}`);
+      }
+      if (nA && !nA.connections.includes(seg.id)) {
+        errors.push(`Node ${nA.id} missing reciprocal link to segment ${seg.id}`);
+      }
+      if (nB && !nB.connections.includes(seg.id)) {
+        errors.push(`Node ${nB.id} missing reciprocal link to segment ${seg.id}`);
+      }
+    }
+
+    for (const node of nodes) {
+      if (node.connections.length >= 3) {
+        junctionCount++;
+        const nodeY = RoadsSystem.getRoadElevation(
+          node.x,
+          node.z,
+          EnvironmentSystem.getTerrainHeight
+        );
+        if (!Number.isFinite(nodeY)) {
+          errors.push(`Junction node ${node.id} has invalid terrain elevation: ${nodeY}`);
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      console.warn('[WorldSystem] Road graph audit detected issues:', errors);
+    }
+
+    return {
+      isValid: errors.length === 0,
+      nodeCount: nodes.length,
+      segmentCount: segments.length,
+      junctionCount,
+      errors,
+    };
   }
 
   // Ensures all scene matrices, initial streamed chunks, and camera matrices
@@ -180,7 +290,7 @@ export class WorldSystem {
     // Restore player position & driving state
     const px = Math.max(-90, Math.min(1335, saved.playerX));
     const pz = Math.max(-90, Math.min(90, saved.playerZ));
-    const py = EnvironmentSystem.getTerrainHeight(px, pz);
+    const py = this.roads.getSurfaceHeightAt(px, pz);
     this.player.position.set(px, py, pz);
     this.player.heading = Number.isFinite(saved.playerHeading)
       ? saved.playerHeading
@@ -308,6 +418,14 @@ export class WorldSystem {
     this.messageClearTimer = 4.5;
   }
 
+  public pauseAudio(): void {
+    this.audio.pauseAudio();
+  }
+
+  public resumeAudio(): void {
+    this.audio.resumeAudio();
+  }
+
   public update(dt: number, input: ControlInputState): GameTelemetry {
     const safeDt = Math.min(dt, 0.05);
 
@@ -318,6 +436,51 @@ export class WorldSystem {
       this.currentFps = Math.round(this.frameCount / this.fpsAccumulator);
       this.frameCount = 0;
       this.fpsAccumulator = 0;
+    }
+
+    if (this.isTitleDriftActive) {
+      this.titleDriftTimer += safeDt;
+      const t = this.titleDriftTimer;
+
+      // Slow cinematic camera sweep over Williams Street scene
+      const driftX = 14 + Math.sin(t * 0.12) * 10;
+      const driftZ = 8 + Math.cos(t * 0.12) * 8;
+      const driftY = 6.8 + Math.sin(t * 0.08) * 1.5;
+
+      this.cameraSystem.camera.position.set(driftX, driftY, driftZ);
+      this.cameraSystem.camera.lookAt(4, 2.0, -1.6);
+      this.cameraSystem.camera.updateMatrixWorld();
+
+      const focusPos = new THREE.Vector3(4, 0, -1.6);
+      this.lighting.update(safeDt, focusPos);
+      this.worldStreaming.update(
+        safeDt,
+        focusPos,
+        focusPos,
+        this.lighting.streetLightActivation,
+        this.lighting.wetness
+      );
+      this.traffic.update(
+        safeDt,
+        focusPos,
+        this.currentFps,
+        this.vehicle.position,
+        false
+      );
+      this.environment.updateWindAnimation(safeDt, this.lighting.settings.weather);
+      this.environment.updateStreetLightsAndWetness(
+        this.lighting.streetLightActivation,
+        this.lighting.wetness,
+        focusPos,
+        this.worldStreaming.activeStreetLightPositions
+      );
+      this.roads.setWetness(this.lighting.wetness);
+      this.buildings.setNightLighting(this.lighting.streetLightActivation);
+
+      if (!this.isContextLost()) {
+        this.renderer.render(this.scene, this.cameraSystem.camera);
+      }
+      return this.getTelemetry();
     }
 
     // Apply camera look rotation
@@ -384,6 +547,7 @@ export class WorldSystem {
         interactRequested: false,
         vehicleThrottle: 0,
         vehicleBrake: 0,
+        vehicleHandbrake: false,
         vehicleHornRequested: false,
       };
       this.vehicle.update(safeDt, emptyInput, currentSurface, activeColliders);
@@ -618,6 +782,63 @@ export class WorldSystem {
       distanceToDestinationMeters: distToDest,
       activeStreamedChunks: this.worldStreaming.getLoadedChunkCount(),
       nearbyInteractable: closestInteractable,
+      lastInteractionMessage: this.lastInteractionMessage,
+      timeHours: this.lighting.timeHours,
+      formattedClock: this.lighting.getFormattedClock(),
+      dayPhaseName: this.lighting.getDayPhaseName(),
+      isNight: this.lighting.isNight,
+      weather: this.lighting.settings.weather,
+      cameraMode: camMode,
+      audioEnabled: this.audio.getEnabled(),
+      fps: this.currentFps,
+      trafficCount: this.traffic.getActiveCount(),
+      trafficDensity: this.traffic.density,
+    };
+  }
+
+  public getTelemetry(): GameTelemetry {
+    const focusPos = this.vehicle.isPlayerDriving
+      ? this.vehicle.position
+      : this.player.position;
+    const followHeading = this.vehicle.isPlayerDriving
+      ? this.vehicle.heading
+      : this.player.heading;
+    const followSpeed = this.vehicle.isPlayerDriving
+      ? Math.abs(this.vehicle.speed)
+      : this.player.currentSpeed;
+    const camMode = this.cameraSystem.settings.mode;
+    const regionInfo = WorldStreamingSystem.getRegionForX(focusPos.x);
+
+    let distToDest = 0;
+    if (this.destination === 'BO') {
+      distToDest = Math.round(Math.hypot(1150 - focusPos.x, 0 - focusPos.z));
+    } else if (this.destination === 'FREETOWN') {
+      distToDest = Math.round(Math.hypot(0 - focusPos.x, -1.8 - focusPos.z));
+    }
+
+    return {
+      x: focusPos.x,
+      y: focusPos.y,
+      z: focusPos.z,
+      heading: camMode === 'DRONE' ? -this.cameraSystem.droneYaw : followHeading,
+      speed: followSpeed,
+      isGrounded: this.player.isGrounded,
+      isSprinting: this.player.isSprinting,
+      animState: this.player.animState,
+      surfaceType: this.roads.getSurfaceTypeAt(focusPos.x, focusPos.z),
+      zoneName: this.roads.getZoneName(focusPos.x, focusPos.z),
+      regionId: regionInfo.id,
+      regionLabel: regionInfo.label,
+      isDriving: this.vehicle.isPlayerDriving,
+      vehicleSpeedKmh: Math.round(Math.abs(this.vehicle.speed) * 3.6),
+      vehiclePosition: {
+        x: this.vehicle.position.x,
+        z: this.vehicle.position.z,
+      },
+      destination: this.destination,
+      distanceToDestinationMeters: distToDest,
+      activeStreamedChunks: this.worldStreaming.getLoadedChunkCount(),
+      nearbyInteractable: null,
       lastInteractionMessage: this.lastInteractionMessage,
       timeHours: this.lighting.timeHours,
       formattedClock: this.lighting.getFormattedClock(),

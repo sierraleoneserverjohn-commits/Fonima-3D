@@ -1,10 +1,9 @@
-const CACHE_NAME = 'fonima-3d-shell-v1';
+const CACHE_NAME = 'fonima-3d-shell-v2';
 
 const STATIC_ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './manifest.json',
   './favicon.svg',
   './icons/icon-192x192.png',
   './icons/icon-512x512.png',

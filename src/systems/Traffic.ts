@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { RoadsSystem } from './Roads';
 import { RoadGraph, RoadGraphNode, RoadGraphSegment } from './RoadGraph';
+import { TrafficDensity } from './GameState';
 
-export type TrafficDensity = 'off' | 'low' | 'medium' | 'high';
+export type { TrafficDensity };
 export type VehicleType = 'taxi' | 'car' | 'truck';
 
 interface TrafficVehicle {

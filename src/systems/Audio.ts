@@ -180,8 +180,31 @@ export class AudioSystem {
     return this.isEnabled;
   }
 
+  public enable(): boolean {
+    if (!this.ctx) {
+      this.initAudio();
+    }
+    this.isEnabled = true;
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+    return true;
+  }
+
   public getEnabled(): boolean {
     return this.isEnabled;
+  }
+
+  public pauseAudio(): void {
+    if (this.ctx && this.ctx.state === 'running') {
+      this.ctx.suspend().catch(() => {});
+    }
+  }
+
+  public resumeAudio(): void {
+    if (this.isEnabled && this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
   }
 
   private initAudio(): void {

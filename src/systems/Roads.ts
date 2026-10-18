@@ -5,6 +5,9 @@ import { ProceduralTextures } from './ProceduralTextures';
 import { RoadGraph, RoadGraphNode, RoadGraphSegment } from './RoadGraph';
 
 export class RoadsSystem {
+  public readonly roadGraph = RoadGraph;
+  private getTerrainHeightFn: (x: number, z: number) => number;
+
   private asphaltMat!: THREE.MeshStandardMaterial;
   private asphaltJunctionMat!: THREE.MeshStandardMaterial;
   private lateriteMat!: THREE.MeshStandardMaterial;
@@ -12,20 +15,38 @@ export class RoadsSystem {
   private centerLineMat!: THREE.MeshBasicMaterial;
   private edgeLineMat!: THREE.MeshBasicMaterial;
   private zebraMat!: THREE.MeshBasicMaterial;
-  private curbConcreteMat!: THREE.MeshStandardMaterial;
 
   constructor(
     scene: THREE.Scene,
     getTerrainHeight: (x: number, z: number) => number
   ) {
+    this.getTerrainHeightFn = getTerrainHeight;
     RoadGraph.initialize();
     this.initMaterials();
     this.buildConnectedRoadNetwork(scene, getTerrainHeight);
   }
 
+  // Consistent elevation lookup across all roads, bridges, and intersections
+  public static getRoadElevation(
+    x: number,
+    z: number,
+    getTerrainHeight: (x: number, z: number) => number
+  ): number {
+    let y = getTerrainHeight(x, z);
+    // Sewa River bridge arch lift (Chunk 6: X in [642, 698])
+    if (x >= 642 && x <= 698) {
+      const hwyZ = EnvironmentSystem.getHighwayCenterZ(x);
+      if (Math.abs(z - hwyZ) < 8.0) {
+        y += Math.sin(((x - 642) / 56) * Math.PI) * 1.15;
+      }
+    }
+    return y;
+  }
+
   private initMaterials(): void {
     const asphaltTex = ProceduralTextures.getAsphaltRoadTexture();
 
+    // Road segment asphalt (Layer 4)
     this.asphaltMat = new THREE.MeshStandardMaterial({
       map: asphaltTex,
       roughness: 0.82,
@@ -35,61 +56,74 @@ export class RoadsSystem {
       polygonOffsetUnits: -4,
     });
 
+    // Junction patch asphalt (Layer 6: strictly on top of incoming segments)
     this.asphaltJunctionMat = new THREE.MeshStandardMaterial({
       map: asphaltTex,
       roughness: 0.82,
       metalness: 0.05,
       polygonOffset: true,
-      polygonOffsetFactor: -5,
-      polygonOffsetUnits: -5,
+      polygonOffsetFactor: -6,
+      polygonOffsetUnits: -6,
     });
 
+    // Laterite dirt road surface (Layer 4)
     this.lateriteMat = new THREE.MeshStandardMaterial({
       color: 0xaa5428,
       roughness: 0.94,
       metalness: 0.02,
       polygonOffset: true,
-      polygonOffsetFactor: -3,
-      polygonOffsetUnits: -3,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
     });
 
+    // Underbed laterite dirt shoulder (Layer 2)
     this.lateriteShoulderMat = new THREE.MeshStandardMaterial({
       color: 0xb25b2f,
       roughness: 0.95,
       metalness: 0.02,
       polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
     });
 
+    // Center yellow dashed road lines (Layer 7)
     this.centerLineMat = new THREE.MeshBasicMaterial({
       color: 0xfacc15,
-      polygonOffset: true,
-      polygonOffsetFactor: -6,
-      polygonOffsetUnits: -6,
-    });
-
-    this.edgeLineMat = new THREE.MeshBasicMaterial({
-      color: 0xf8fafc,
-      polygonOffset: true,
-      polygonOffsetFactor: -6,
-      polygonOffsetUnits: -6,
-    });
-
-    this.zebraMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
       polygonOffset: true,
       polygonOffsetFactor: -7,
       polygonOffsetUnits: -7,
     });
 
-    this.curbConcreteMat = new THREE.MeshStandardMaterial({
-      color: 0x8a867e,
-      roughness: 0.88,
+    // Solid white road edge lines (Layer 7)
+    this.edgeLineMat = new THREE.MeshBasicMaterial({
+      color: 0xf8fafc,
       polygonOffset: true,
-      polygonOffsetFactor: -3,
-      polygonOffsetUnits: -3,
+      polygonOffsetFactor: -7,
+      polygonOffsetUnits: -7,
     });
+
+    // Pedestrian zebra crossings (Layer 8)
+    this.zebraMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      polygonOffset: true,
+      polygonOffsetFactor: -8,
+      polygonOffsetUnits: -8,
+    });
+  }
+
+  private getNodeJunctionRadius(node: RoadGraphNode): number {
+    let maxWidth = 7.0;
+    node.connections.forEach((segId) => {
+      const seg = RoadGraph.getSegment(segId);
+      if (seg && seg.width > maxWidth) {
+        maxWidth = seg.width;
+      }
+    });
+    return maxWidth * 0.5 + 1.4;
+  }
+
+  private isNodeFullJunction(node: RoadGraphNode): boolean {
+    return node.connections.length >= 3;
   }
 
   private buildConnectedRoadNetwork(
@@ -99,7 +133,7 @@ export class RoadsSystem {
     const segments = RoadGraph.getAllSegments();
     const nodes = RoadGraph.getAllNodes();
 
-    // 1. Build road ribbons for every edge in the graph
+    // 1. Build road ribbons for every edge in the graph with smooth junction blending
     segments.forEach((seg) => {
       this.buildSegmentRibbon(scene, seg, getTerrainHeight);
     });
@@ -119,25 +153,29 @@ export class RoadsSystem {
     seg: RoadGraphSegment,
     getTerrainHeight: (x: number, z: number) => number
   ): void {
-    const nodeA = RoadGraph.getNode(seg.nodeAId)!;
-    const nodeB = RoadGraph.getNode(seg.nodeBId)!;
+    const nodeA = RoadGraph.getNode(seg.nodeAId);
+    const nodeB = RoadGraph.getNode(seg.nodeBId);
+    if (!nodeA || !nodeB) return;
 
     const length = seg.length;
-    const steps = Math.max(12, Math.floor(length / 2.8));
+    const steps = Math.max(16, Math.floor(length / 2.0));
     const angle = Math.atan2(seg.dirZ, seg.dirX);
     const midX = (nodeA.x + nodeB.x) / 2;
     const midZ = (nodeA.z + nodeB.z) / 2;
 
-    // Helper: calculate elevation with bridge lift
+    const isJctA = this.isNodeFullJunction(nodeA);
+    const isJctB = this.isNodeFullJunction(nodeB);
+    const rA = isJctA ? this.getNodeJunctionRadius(nodeA) : (nodeA.isCulDeSac ? (nodeA.turningRadius || 8.0) * 0.75 : 0);
+    const rB = isJctB ? this.getNodeJunctionRadius(nodeB) : (nodeB.isCulDeSac ? (nodeB.turningRadius || 8.0) * 0.75 : 0);
+    const blendDistA = rA > 0 ? rA + 4.0 : 0;
+    const blendDistB = rB > 0 ? rB + 4.0 : 0;
+
+    // Helper: calculate consistent elevation with smooth blend
     const getElev = (wx: number, wz: number, baseOffset: number): number => {
-      let y = getTerrainHeight(wx, wz) + baseOffset;
-      if (wx >= 642 && wx <= 698) {
-        y += Math.sin(((wx - 642) / 56) * Math.PI) * 1.15;
-      }
-      return y;
+      return RoadsSystem.getRoadElevation(wx, wz, getTerrainHeight) + baseOffset;
     };
 
-    // A. Underbed Laterite Dirt Shoulder
+    // A. Underbed Laterite Dirt Shoulder (Layer 2)
     const shoulderWidth = seg.width + 2.2;
     const shGeo = new THREE.PlaneGeometry(length, shoulderWidth, steps, 2);
     shGeo.rotateX(-Math.PI / 2);
@@ -157,7 +195,8 @@ export class RoadsSystem {
     shMesh.renderOrder = 2;
     scene.add(shMesh);
 
-    // B. Asphalt Surface Ribbon
+    // B. Asphalt / Laterite Surface Ribbon (Layer 4)
+    // Vertices near junctions smoothly flatten their crown to 0 and tuck 6mm under junction patch
     const rdGeo = new THREE.PlaneGeometry(length, seg.width, steps, 4);
     rdGeo.rotateX(-Math.PI / 2);
     const rdPos = rdGeo.attributes.position;
@@ -166,8 +205,32 @@ export class RoadsSystem {
       const lz = rdPos.getZ(i);
       const wx = midX + lx * Math.cos(angle) - lz * Math.sin(angle);
       const wz = midZ + lx * Math.sin(angle) + lz * Math.cos(angle);
-      const crown = Math.abs(lz) < seg.width * 0.28 ? 0.015 : 0.0;
-      rdPos.setY(i, getElev(wx, wz, 0.08 + crown));
+
+      // Distance from nodeA and nodeB along segment centerline
+      const distA = lx + length / 2;
+      const distB = length - distA;
+
+      let factorA = 1.0;
+      if (rA > 0) {
+        factorA = Math.max(0, Math.min(1, (distA - (rA - 0.5)) / (blendDistA - (rA - 0.5))));
+        factorA = factorA * factorA * (3 - 2 * factorA);
+      }
+
+      let factorB = 1.0;
+      if (rB > 0) {
+        factorB = Math.max(0, Math.min(1, (distB - (rB - 0.5)) / (blendDistB - (rB - 0.5))));
+        factorB = factorB * factorB * (3 - 2 * factorB);
+      }
+
+      const crownBlend = factorA * factorB;
+      const baseCrown = Math.abs(lz) < seg.width * 0.28 ? 0.015 : 0.0;
+      const localCrown = baseCrown * crownBlend;
+
+      // Inside junction footprint, surface is flat at 0.078, tucking under the 0.084 junction patch
+      const junctionTuck = Math.min(factorA, factorB);
+      const surfaceOffset = 0.078 + 0.002 * junctionTuck + localCrown;
+
+      rdPos.setY(i, getElev(wx, wz, surfaceOffset));
     }
     rdGeo.computeVertexNormals();
     const mat = seg.surface === 'asphalt' ? this.asphaltMat : this.lateriteMat;
@@ -178,64 +241,88 @@ export class RoadsSystem {
     rdMesh.renderOrder = 4;
     scene.add(rdMesh);
 
-    // C. Center Yellow Dashed Line Markings (for 2-lane roads)
+    // C. Center Yellow Dashed Line Markings (Layer 7)
+    // Retract before entering junction footprint so dashes never overlap crossing roads
     if (seg.hasCenterLine && seg.width >= 6.8 && length > 6.0) {
       const dashLength = 3.6;
       const gapLength = 4.2;
-      const totalDashPeriod = dashLength + gapLength;
-      const startOffset = Math.max(3.0, (length % totalDashPeriod) / 2);
+      const totalPeriod = dashLength + gapLength;
 
-      for (let d = startOffset; d < length - 3.5; d += totalDashPeriod) {
-        const t = d / length - 0.5;
-        const lx = t * length;
-        const wx = midX + lx * Math.cos(angle);
-        const wz = midZ + lx * Math.sin(angle);
-        const wy = getElev(wx, wz, 0.098);
+      const startBound = rA > 0 ? (rA + 1.2) : 2.5;
+      const endBound = rB > 0 ? (length - rB - 1.2) : (length - 2.5);
 
-        const dashGeo = new THREE.PlaneGeometry(dashLength, 0.16);
-        dashGeo.rotateX(-Math.PI / 2);
-        const dashMesh = new THREE.Mesh(dashGeo, this.centerLineMat);
-        dashMesh.position.set(wx, wy, wz);
-        dashMesh.rotation.y = -angle;
-        dashMesh.renderOrder = 6;
-        scene.add(dashMesh);
+      if (endBound > startBound + dashLength) {
+        const usableSpan = endBound - startBound;
+        const startOffset = startBound + Math.max(0, (usableSpan % totalPeriod) / 2);
+
+        for (let d = startOffset; d <= endBound - dashLength; d += totalPeriod) {
+          const t = d / length - 0.5;
+          const lx = t * length;
+          const wx = midX + lx * Math.cos(angle);
+          const wz = midZ + lx * Math.sin(angle);
+          const wy = getElev(wx, wz, 0.096);
+
+          const dashGeo = new THREE.PlaneGeometry(dashLength, 0.16);
+          dashGeo.rotateX(-Math.PI / 2);
+          const dashMesh = new THREE.Mesh(dashGeo, this.centerLineMat);
+          dashMesh.position.set(wx, wy, wz);
+          dashMesh.rotation.y = -angle;
+          dashMesh.renderOrder = 7;
+          scene.add(dashMesh);
+        }
       }
     }
 
-    // D. Solid White Edge Lines (continuous along road edges)
-    if (seg.hasEdgeLines && seg.width >= 6.8 && length > 4.0) {
-      const edgeOffset = seg.width * 0.46;
-      [-edgeOffset, edgeOffset].forEach((sideZ) => {
-        const edgeSteps = Math.max(8, Math.floor(length / 4.0));
-        const edgeGeo = new THREE.PlaneGeometry(length - 2.0, 0.14, edgeSteps, 1);
-        edgeGeo.rotateX(-Math.PI / 2);
-        const ePos = edgeGeo.attributes.position;
-        for (let i = 0; i < ePos.count; i++) {
-          const lx = ePos.getX(i);
-          const lz = sideZ;
-          const wx = midX + lx * Math.cos(angle) - lz * Math.sin(angle);
-          const wz = midZ + lx * Math.sin(angle) + lz * Math.cos(angle);
-          ePos.setY(i, getElev(wx, wz, 0.094));
-        }
-        edgeGeo.computeVertexNormals();
-        const edgeMesh = new THREE.Mesh(edgeGeo, this.edgeLineMat);
-        edgeMesh.position.set(midX, 0, midZ);
-        edgeMesh.rotation.y = -angle;
-        edgeMesh.renderOrder = 5;
-        scene.add(edgeMesh);
-      });
+    // D. Solid White Edge Lines (Layer 7)
+    // Stop at junction mouth so turn radius is clear
+    if (seg.hasEdgeLines && seg.width >= 6.8 && length > 6.0) {
+      const startBound = rA > 0 ? (rA + 0.6) : 1.2;
+      const endBound = rB > 0 ? (length - rB - 0.6) : (length - 1.2);
+      const lineSpan = endBound - startBound;
+
+      if (lineSpan > 2.0) {
+        const edgeOffset = seg.width * 0.46;
+        const midLineU = (startBound + endBound) / 2;
+        const midLineLx = midLineU - length / 2;
+        const edgeMidX = midX + midLineLx * Math.cos(angle);
+        const edgeMidZ = midZ + midLineLx * Math.sin(angle);
+        const edgeSteps = Math.max(8, Math.floor(lineSpan / 3.0));
+
+        [-edgeOffset, edgeOffset].forEach((sideZ) => {
+          const edgeGeo = new THREE.PlaneGeometry(lineSpan, 0.14, edgeSteps, 1);
+          edgeGeo.rotateX(-Math.PI / 2);
+          const ePos = edgeGeo.attributes.position;
+          for (let i = 0; i < ePos.count; i++) {
+            const lx = ePos.getX(i);
+            const lz = sideZ;
+            const wx = edgeMidX + lx * Math.cos(angle) - lz * Math.sin(angle);
+            const wz = edgeMidZ + lx * Math.sin(angle) + lz * Math.cos(angle);
+            ePos.setY(i, getElev(wx, wz, 0.092));
+          }
+          edgeGeo.computeVertexNormals();
+          const edgeMesh = new THREE.Mesh(edgeGeo, this.edgeLineMat);
+          edgeMesh.position.set(edgeMidX, 0, edgeMidZ);
+          edgeMesh.rotation.y = -angle;
+          edgeMesh.renderOrder = 7;
+          scene.add(edgeMesh);
+        });
+      }
     }
 
-    // E. Zebra Crossings at Main Junction Approaches
+    // E. Zebra Crossings at Main Junction Approaches (Layer 8)
     if (seg.hasZebraCrossings && length >= 14.0) {
-      // Place crossing near nodeA and nodeB
-      [4.2, length - 4.2].forEach((posAlong) => {
+      const crossOffsets: number[] = [];
+      if (isJctA) crossOffsets.push(rA + 1.8);
+      if (isJctB) crossOffsets.push(length - (rB + 1.8));
+      if (crossOffsets.length === 0) crossOffsets.push(4.5, length - 4.5);
+
+      crossOffsets.forEach((posAlong) => {
+        if (posAlong <= 2.0 || posAlong >= length - 2.0) return;
         const t = posAlong / length - 0.5;
         const lx = t * length;
         const cx = midX + lx * Math.cos(angle);
         const cz = midZ + lx * Math.sin(angle);
 
-        // 6 white stripes across the road
         const numStripes = 6;
         const stripeWidth = 0.45;
         const stripeLength = 2.4;
@@ -246,7 +333,7 @@ export class RoadsSystem {
           const lz = -totalSpan / 2 + s * stripeStep;
           const wx = cx - lz * Math.sin(angle);
           const wz = cz + lz * Math.cos(angle);
-          const wy = getElev(wx, wz, 0.096);
+          const wy = getElev(wx, wz, 0.094);
 
           const stripeMesh = new THREE.Mesh(
             new THREE.PlaneGeometry(stripeLength, stripeWidth),
@@ -255,14 +342,14 @@ export class RoadsSystem {
           stripeMesh.rotation.x = -Math.PI / 2;
           stripeMesh.rotation.z = -angle;
           stripeMesh.position.set(wx, wy, wz);
-          stripeMesh.renderOrder = 7;
+          stripeMesh.renderOrder = 8;
           scene.add(stripeMesh);
         }
       });
     }
   }
 
-  // Smooth junction patch where 2 or more roads meet so there are NO gaps and NO flickering
+  // Smooth junction patch where roads meet with consistent height lookup
   private buildJunctionPatch(
     scene: THREE.Scene,
     node: RoadGraphNode,
@@ -276,10 +363,11 @@ export class RoadsSystem {
       }
     });
 
-    const patchRadius = maxWidth * 0.75 + 1.2;
-    const segmentsCount = 24;
+    const isFullJunction = node.connections.length >= 3;
+    const patchRadius = isFullJunction ? (maxWidth * 0.5 + 1.6) : (maxWidth * 0.5 + 0.8);
+    const segmentsCount = isFullJunction ? 28 : 20;
 
-    // Smooth circular asphalt patch sampling terrain elevation around its perimeter
+    // Smooth circular asphalt patch placed at 0.084 (strictly 6mm above flattened segment ribbons)
     const patchGeo = new THREE.CircleGeometry(patchRadius, segmentsCount);
     patchGeo.rotateX(-Math.PI / 2);
     const pos = patchGeo.attributes.position;
@@ -289,10 +377,7 @@ export class RoadsSystem {
       const lz = pos.getZ(i);
       const wx = node.x + lx;
       const wz = node.z + lz;
-      let wy = getTerrainHeight(wx, wz) + 0.082;
-      if (wx >= 642 && wx <= 698) {
-        wy += Math.sin(((wx - 642) / 56) * Math.PI) * 1.15;
-      }
+      const wy = RoadsSystem.getRoadElevation(wx, wz, getTerrainHeight) + 0.084;
       pos.setY(i, wy);
     }
     patchGeo.computeVertexNormals();
@@ -300,23 +385,23 @@ export class RoadsSystem {
     const patchMesh = new THREE.Mesh(patchGeo, this.asphaltJunctionMat);
     patchMesh.position.set(node.x, 0, node.z);
     patchMesh.receiveShadow = true;
-    patchMesh.renderOrder = 5;
+    patchMesh.renderOrder = 6;
     scene.add(patchMesh);
 
-    // Laterite underbed for junction
-    const underGeo = new THREE.CircleGeometry(patchRadius + 1.8, 20);
+    // Laterite underbed for junction (Layer 3)
+    const underGeo = new THREE.CircleGeometry(patchRadius + 2.0, 24);
     underGeo.rotateX(-Math.PI / 2);
     const uPos = underGeo.attributes.position;
     for (let i = 0; i < uPos.count; i++) {
       const wx = node.x + uPos.getX(i);
       const wz = node.z + uPos.getZ(i);
-      uPos.setY(i, getTerrainHeight(wx, wz) + 0.04);
+      uPos.setY(i, RoadsSystem.getRoadElevation(wx, wz, getTerrainHeight) + 0.042);
     }
     underGeo.computeVertexNormals();
     const underMesh = new THREE.Mesh(underGeo, this.lateriteShoulderMat);
     underMesh.position.set(node.x, 0, node.z);
     underMesh.receiveShadow = true;
-    underMesh.renderOrder = 2;
+    underMesh.renderOrder = 3;
     scene.add(underMesh);
   }
 
@@ -329,14 +414,14 @@ export class RoadsSystem {
     const radius = node.turningRadius || 8.0;
     const segmentsCount = 28;
 
-    // Outer laterite bed
+    // Outer laterite bed (Layer 2)
     const bedGeo = new THREE.CircleGeometry(radius + 1.8, segmentsCount);
     bedGeo.rotateX(-Math.PI / 2);
     const bPos = bedGeo.attributes.position;
     for (let i = 0; i < bPos.count; i++) {
       const wx = node.x + bPos.getX(i);
       const wz = node.z + bPos.getZ(i);
-      bPos.setY(i, getTerrainHeight(wx, wz) + 0.04);
+      bPos.setY(i, RoadsSystem.getRoadElevation(wx, wz, getTerrainHeight) + 0.042);
     }
     bedGeo.computeVertexNormals();
     const bedMesh = new THREE.Mesh(bedGeo, this.lateriteShoulderMat);
@@ -344,35 +429,35 @@ export class RoadsSystem {
     bedMesh.renderOrder = 2;
     scene.add(bedMesh);
 
-    // Asphalt turning circle
+    // Asphalt turning circle (Layer 5)
     const turnGeo = new THREE.CircleGeometry(radius, segmentsCount);
     turnGeo.rotateX(-Math.PI / 2);
     const tPos = turnGeo.attributes.position;
     for (let i = 0; i < tPos.count; i++) {
       const wx = node.x + tPos.getX(i);
       const wz = node.z + tPos.getZ(i);
-      tPos.setY(i, getTerrainHeight(wx, wz) + 0.082);
+      tPos.setY(i, RoadsSystem.getRoadElevation(wx, wz, getTerrainHeight) + 0.084);
     }
     turnGeo.computeVertexNormals();
     const turnMesh = new THREE.Mesh(turnGeo, this.asphaltMat);
     turnMesh.position.set(node.x, 0, node.z);
     turnMesh.receiveShadow = true;
-    turnMesh.renderOrder = 4;
+    turnMesh.renderOrder = 5;
     scene.add(turnMesh);
 
-    // Outer white perimeter ring
+    // Outer white perimeter ring (Layer 7)
     const ringGeo = new THREE.RingGeometry(radius - 0.28, radius, segmentsCount);
     ringGeo.rotateX(-Math.PI / 2);
     const rPos = ringGeo.attributes.position;
     for (let i = 0; i < rPos.count; i++) {
       const wx = node.x + rPos.getX(i);
       const wz = node.z + rPos.getZ(i);
-      rPos.setY(i, getTerrainHeight(wx, wz) + 0.094);
+      rPos.setY(i, RoadsSystem.getRoadElevation(wx, wz, getTerrainHeight) + 0.092);
     }
     ringGeo.computeVertexNormals();
     const ringMesh = new THREE.Mesh(ringGeo, this.edgeLineMat);
     ringMesh.position.set(node.x, 0, node.z);
-    ringMesh.renderOrder = 5;
+    ringMesh.renderOrder = 7;
     scene.add(ringMesh);
   }
 
@@ -405,19 +490,37 @@ export class RoadsSystem {
 
   // Get exact ground/road surface height at (x, z)
   public getSurfaceHeightAt(x: number, z: number): number {
-    const baseH = EnvironmentSystem.getTerrainHeight(x, z);
+    const baseElev = RoadsSystem.getRoadElevation(
+      x,
+      z,
+      this.getTerrainHeightFn
+    );
 
     // 1. Inside No. 22 Williams Street Compound concrete slab
     if (Math.abs(x - 0) <= 7.0 && Math.abs(z - -16.0) <= 7.4) {
-      return baseH + 0.22;
+      return baseElev + 0.22;
     }
 
-    // 2. Check Sewa River Bridge Lift
-    let bridgeLift = 0;
-    if (x >= 642 && x <= 698) {
-      const hwyZ = EnvironmentSystem.getHighwayCenterZ(x);
-      if (Math.abs(z - hwyZ) < 6.5) {
-        bridgeLift = Math.sin(((x - 642) / 56) * Math.PI) * 1.15;
+    // 2. Check if near any junction node (smooth blend priority)
+    const nodes = RoadGraph.getAllNodes();
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      const distToNode = Math.hypot(x - n.x, z - n.z);
+      if (n.connections.length >= 3) {
+        let maxWidth = 7.0;
+        for (const sId of n.connections) {
+          const s = RoadGraph.getSegment(sId);
+          if (s && s.width > maxWidth) maxWidth = s.width;
+        }
+        const rJct = maxWidth * 0.5 + 1.6;
+        if (distToNode <= rJct) {
+          return baseElev + 0.084;
+        }
+      } else if (n.isCulDeSac) {
+        const rTurn = n.turningRadius || 8.0;
+        if (distToNode <= rTurn) {
+          return baseElev + 0.084;
+        }
       }
     }
 
@@ -433,25 +536,30 @@ export class RoadsSystem {
 
       const d = this.distToSegment(x, z, nodeA.x, nodeA.z, nodeB.x, nodeB.z);
       if (d <= seg.width * 0.5) {
-        const crown = d < seg.width * 0.28 ? 0.015 : 0.0;
-        bestOffset = Math.max(bestOffset, 0.08 + crown);
+        // Calculate longitudinal distance along segment centerline to blend crown
+        const dx = nodeB.x - nodeA.x;
+        const dz = nodeB.z - nodeA.z;
+        const l2 = dx * dx + dz * dz;
+        const t = Math.max(0, Math.min(1, ((x - nodeA.x) * dx + (z - nodeA.z) * dz) / l2));
+        const distA = t * seg.length;
+        const distB = seg.length - distA;
+
+        let crownFactor = 1.0;
+        if (nodeA.connections.length >= 3) {
+          crownFactor = Math.min(crownFactor, Math.max(0, Math.min(1, (distA - 5.0) / 4.0)));
+        }
+        if (nodeB.connections.length >= 3) {
+          crownFactor = Math.min(crownFactor, Math.max(0, Math.min(1, (distB - 5.0) / 4.0)));
+        }
+
+        const crown = (d < seg.width * 0.28 ? 0.015 : 0.0) * crownFactor;
+        bestOffset = Math.max(bestOffset, 0.080 + crown);
       } else if (d <= seg.width * 0.5 + 1.2) {
-        bestOffset = Math.max(bestOffset, 0.04);
+        bestOffset = Math.max(bestOffset, 0.040);
       }
     }
 
-    // 4. Check junction patches and cul-de-sacs
-    const nodes = RoadGraph.getAllNodes();
-    for (let i = 0; i < nodes.length; i++) {
-      const n = nodes[i];
-      const distToNode = Math.hypot(x - n.x, z - n.z);
-      const r = n.isCulDeSac ? (n.turningRadius || 8.0) : 6.5;
-      if (distToNode <= r) {
-        bestOffset = Math.max(bestOffset, 0.082);
-      }
-    }
-
-    return baseH + bestOffset + bridgeLift;
+    return baseElev + bestOffset;
   }
 
   // Get ground surface type for footstep sounds & tire friction

@@ -114,7 +114,40 @@ export class CameraSystem {
       return;
     }
 
+    if (this.settings.mode === 'FIRST_PERSON') {
+      this.updateFirstPersonCamera(dt, playerPos);
+      return;
+    }
+
     this.updateThirdPersonCamera(dt, playerPos, isSprinting, colliders);
+  }
+
+  private updateFirstPersonCamera(
+    dt: number,
+    playerPos: THREE.Vector3
+  ): void {
+    const eyeHeight = this.settings.height;
+    const targetEye = new THREE.Vector3(
+      playerPos.x,
+      playerPos.y + eyeHeight,
+      playerPos.z
+    );
+
+    const smooth = Math.min(1, dt * 20.0);
+    this.currentPos.lerp(targetEye, smooth);
+    this.camera.position.copy(this.currentPos);
+
+    const forwardX = -Math.sin(this.yaw) * Math.cos(this.pitch);
+    const forwardY = -Math.sin(this.pitch);
+    const forwardZ = -Math.cos(this.yaw) * Math.cos(this.pitch);
+
+    const lookTarget = new THREE.Vector3(
+      this.currentPos.x + forwardX,
+      this.currentPos.y + forwardY,
+      this.currentPos.z + forwardZ
+    );
+    this.currentLookAt.copy(lookTarget);
+    this.camera.lookAt(lookTarget);
   }
 
   private updateThirdPersonCamera(

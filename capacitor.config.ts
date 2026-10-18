@@ -1,20 +1,10 @@
-export interface CapacitorConfig {
-  appId: string;
-  appName: string;
-  webDir: string;
-  bundledWebRuntime?: boolean;
-  android?: {
-    allowMixedContent?: boolean;
-  };
-}
+import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.fonima.game',
   appName: 'Fonima 3D',
-  webDir: 'dist',
-  android: {
-    allowMixedContent: true
-  }
+  webDir: 'dist'
 };
 
 export default config;
+
